@@ -1,0 +1,15 @@
+# Pinned to the current stable Home Assistant line (checked 2026-10-05).
+# pytest-homeassistant-custom-component 0.13.367 itself pins homeassistant==2026.9.4;
+# the two lines below must always agree. When bumping HA, find the matching release:
+#   python - <<'EOF'
+#   import json, re, urllib.request
+#   d = json.load(urllib.request.urlopen("https://pypi.org/pypi/pytest-homeassistant-custom-component/json"))
+#   vers = sorted((v for v in d["releases"] if re.fullmatch(r"\d+\.\d+\.\d+", v)),
+#                 key=lambda s: [int(x) for x in s.split(".")], reverse=True)
+#   for v in vers[:40]:
+#       m = json.load(urllib.request.urlopen(f"https://pypi.org/pypi/pytest-homeassistant-custom-component/{v}/json"))["info"]
+#       print(v, [r for r in m["requires_dist"] or [] if r.startswith("homeassistant")])
+#   EOF
+homeassistant==2026.9.4
+pytest-homeassistant-custom-component==0.13.367
+ruff==0.16.10
