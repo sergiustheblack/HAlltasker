@@ -80,7 +80,7 @@ In `fakes.py` create `FakeStorage` with `data: dict | None`, `async def async_lo
 
 Tests: load of an empty store; upsert + get + links_of; `links_for_pair` returns tasks that have a link to at least one node of the pair; `save` serializes and a repeated `load` restores; `purge_tombstones` removes only old tombstones; `mark_pair_initialized` survives save/load.
 
-## T-05. Downgrade
+## ✅ T-05. Downgrade
 
 **Read:** ARCHITECTURE §5.
 **Files:** `core/downgrade.py`, `tests/core/test_downgrade.py`.
