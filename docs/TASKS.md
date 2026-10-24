@@ -150,7 +150,7 @@ A match: equal `title` and equal downgraded `due` (downgrade to the weaker of th
 
 `Plugin` ABC with the signature `create(node, task, known_ids)`. `PluginRegistry.register(plugin)`, `for_node(node) -> Plugin` (raises `KeyError` with a clear message). In `fakes.py` add `FakePlugin`: dicts `items[node][external_id] = CanonicalTask`, `caps[node]`, a list `calls`, a flag `fail[node]` to simulate `NodeUnavailable`, and a counter for generating external_id.
 
-## T-12. Engine: read, classify, plan without writing
+## ✅ T-12. Engine: read, classify, plan without writing
 
 **Read:** ARCHITECTURE §6 in full.
 **Files:** `core/engine.py`, `tests/core/test_engine_plan.py`.
