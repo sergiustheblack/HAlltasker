@@ -71,7 +71,7 @@ Tests (minimum): round-trip `to_dict/from_dict` for due None/date/datetime; naiv
 
 Add the dataclasses. `Link` has the methods `to_dict()`/`from_dict()` (snapshots as nested dicts `{"data":..., "hash":...}`). Test: round-trip of `Link` with filled and empty snapshots.
 
-## T-04. Link store
+## ✅ T-04. Link store
 
 **Read:** ARCHITECTURE §9.
 **Files:** `core/link_store.py`, `tests/core/test_link_store.py`, `tests/core/fakes.py`.
