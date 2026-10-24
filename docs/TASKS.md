@@ -89,7 +89,7 @@ Functions `downgrade(task, caps)` and `equivalent(observed, expected, caps)`. Fo
 
 Tests: datetime 2026-10-05 23:30+03:00 with `caps.due="date"` and tz=+03:00 → date 2026-10-05; the same datetime with tz=UTC → 2026-10-05 (20:30 UTC); `caps.due="none"` → None; description is dropped; `equivalent` is true for a date against a datetime with `caps.due="date"`.
 
-## T-06. Change classification
+## ✅ T-06. Change classification
 
 **Read:** ARCHITECTURE §6.1 step 4.
 **Files:** `core/diff.py`, `tests/core/test_diff.py`.
