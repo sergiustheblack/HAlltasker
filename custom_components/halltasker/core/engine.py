@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 import datetime as dt
 
 from ..plugins.base import NodeUnavailable
@@ -10,10 +11,22 @@ from ..plugins.registry import PluginRegistry
 from .actions import Action, RunResult
 from .conflict import merge
 from .diff import SideState, classify
+from .downgrade import downgrade
 from .link_store import LinkStore
 from .matching import pair_up
-from .model import CanonicalTask, Capabilities, DirectionRule, Link, SyncPair
+from .model import CanonicalTask, Capabilities, DirectionRule, Link, Snapshot, SyncPair
 from .router import allows, apply_transform, op_for_change, passes_filter
+
+
+@dataclass
+class _CycleContext:
+    """Everything the execution step needs from the planning step."""
+
+    snaps: dict[str, dict[str, CanonicalTask]]
+    caps: dict[str, Capabilities]
+    tz: dt.tzinfo
+    echo_updates: list[tuple[Link, Snapshot]] = field(default_factory=list)
+    targeted: set[tuple[str, str]] = field(default_factory=set)
 
 
 class SyncEngine:
@@ -28,21 +41,29 @@ class SyncEngine:
 
     async def run_pair(self, pair: SyncPair, *, dry_run: bool) -> RunResult:
         try:
-            plan, live_links = await self._plan(pair)
+            plan, live_links, context = await self._plan(pair)
         except NodeUnavailable as err:
             return RunResult(ok=False, error=str(err))
         except Exception as err:
             return RunResult(ok=False, error=f"{type(err).__name__}: {err}")
+        if dry_run or pair.initial_sync == "dry_run":
+            return RunResult(ok=True, error=None, actions_planned=plan, links=live_links)
+        was_initialized = self._store.pair_initialized(pair.id)
+        applied, failed = await self._execute(plan, context)
+        if not was_initialized:
+            self._store.mark_pair_initialized(pair.id)
+        if applied or not was_initialized:
+            await self._store.save()
         return RunResult(
             ok=True,
             error=None,
             actions_planned=plan,
-            actions_applied=[],
-            actions_failed=[],
+            actions_applied=applied,
+            actions_failed=failed,
             links=live_links,
         )
 
-    async def _plan(self, pair: SyncPair) -> tuple[list[Action], int]:
+    async def _plan(self, pair: SyncPair) -> tuple[list[Action], int, _CycleContext]:
         plugin_a = self._registry.for_node(pair.a)
         plugin_b = self._registry.for_node(pair.b)
         caps_a = await plugin_a.capabilities(pair.a)
@@ -50,6 +71,11 @@ class SyncEngine:
         snap_a = await plugin_a.list(pair.a)
         snap_b = await plugin_b.list(pair.b)
         tz = self._clock().tzinfo or dt.UTC
+        context = _CycleContext(
+            snaps={pair.a: snap_a, pair.b: snap_b},
+            caps={pair.a: caps_a, pair.b: caps_b},
+            tz=tz,
+        )
 
         links = self._store.links_for_pair(pair.a, pair.b)
         tombstoned_a: set[str] = set()
@@ -65,12 +91,14 @@ class SyncEngine:
                 if link_b is not None:
                     tombstoned_b.add(link_b.external_id)
                 continue
-            state_a = classify(
-                link_a, snap_a.get(link_a.external_id) if link_a is not None else None, caps_a, tz
-            )
-            state_b = classify(
-                link_b, snap_b.get(link_b.external_id) if link_b is not None else None, caps_b, tz
-            )
+            current_a = snap_a.get(link_a.external_id) if link_a is not None else None
+            current_b = snap_b.get(link_b.external_id) if link_b is not None else None
+            state_a = classify(link_a, current_a, caps_a, tz)
+            state_b = classify(link_b, current_b, caps_b, tz)
+            if state_a.kind == "echo" and link_a is not None and current_a is not None:
+                context.echo_updates.append((link_a, Snapshot.of(current_a)))
+            if state_b.kind == "echo" and link_b is not None and current_b is not None:
+                context.echo_updates.append((link_b, Snapshot.of(current_b)))
             plan.extend(self._decide(pair, canonical_id, link_a, state_a, link_b, state_b, tz))
 
         plan.extend(
@@ -88,7 +116,142 @@ class SyncEngine:
         live_links = sum(
             1 for node_links in links.values() for link in node_links.values() if not link.tombstone
         )
-        return plan, live_links
+        return plan, live_links, context
+
+    async def _execute(
+        self, plan: list[Action], context: _CycleContext
+    ) -> tuple[list[Action], list[tuple[Action, str]]]:
+        applied: list[Action] = []
+        failed: list[tuple[Action, str]] = []
+        now = self._clock().isoformat()
+        context.targeted = {
+            (action.node, action.canonical_id)
+            for action in plan
+            if action.kind in ("update", "complete")
+        }
+        for action in plan:
+            try:
+                await self._apply(action, context, now)
+            except Exception as err:
+                failed.append((action, f"{type(err).__name__}: {err}"))
+                continue
+            applied.append(action)
+            await self._store.save()
+        for link, snapshot in context.echo_updates:
+            link.last_observed = snapshot
+        return applied, failed
+
+    async def _apply(self, action: Action, context: _CycleContext, now: str) -> None:
+        plugin = self._registry.for_node(action.node)
+        caps = context.caps[action.node]
+        tz = context.tz
+        if action.kind == "create":
+            if action.task is None:
+                raise ValueError("create action without a task")
+            task = downgrade(action.task, caps, tz)
+            known_ids = frozenset(context.snaps[action.node])
+            external_id = await plugin.create(action.node, task, known_ids)
+            self._store.upsert(
+                Link(
+                    canonical_id=action.canonical_id,
+                    node=action.node,
+                    external_id=external_id,
+                    last_written=Snapshot.of(task),
+                    last_synced=Snapshot.of(action.task),
+                    last_seen_at=now,
+                )
+            )
+            self._refresh_source(action, context, now)
+            return
+        if action.kind in ("update", "complete"):
+            if action.task is None or action.external_id is None:
+                raise ValueError("update action without task or external_id")
+            task = downgrade(action.task, caps, tz)
+            await plugin.update(action.node, action.external_id, task, action.changed)
+            self._written(action.node, action.external_id, task, action.task, now)
+            self._refresh_source(action, context, now)
+            return
+        if action.kind == "soft_delete":
+            if action.task is None or action.external_id is None:
+                raise ValueError("soft_delete action without task or external_id")
+            done = replace(action.task, status="done")
+            task = downgrade(done, caps, tz)
+            await plugin.update(action.node, action.external_id, task, frozenset({"status"}))
+            link = self._store.get(action.node, action.external_id)
+            if link is not None:
+                link.last_written = Snapshot.of(task)
+                link.last_synced = Snapshot.of(done)
+                link.last_seen_at = now
+                link.tombstone = True
+                link.tombstone_at = now
+            return
+        if action.kind == "delete":
+            if action.external_id is None:
+                raise ValueError("delete action without external_id")
+            await plugin.delete(action.node, action.external_id)
+            self._entomb(action.node, action.canonical_id, action.external_id, now)
+            return
+        if action.kind == "tombstone":
+            self._entomb(action.node, action.canonical_id, action.external_id or "", now)
+            return
+        if action.kind == "link":
+            if action.external_id is None:
+                raise ValueError("link action without external_id")
+            task = context.snaps[action.node].get(action.external_id)
+            if task is None:
+                raise ValueError(f"link action for unknown item {action.external_id}")
+            snapshot = Snapshot.of(task)
+            self._store.upsert(
+                Link(
+                    canonical_id=action.canonical_id,
+                    node=action.node,
+                    external_id=action.external_id,
+                    last_observed=snapshot,
+                    last_synced=snapshot,
+                    last_seen_at=now,
+                )
+            )
+            return
+        raise ValueError(f"unknown action kind {action.kind}")
+
+    def _written(
+        self,
+        node: str,
+        external_id: str,
+        written: CanonicalTask,
+        synced: CanonicalTask,
+        now: str,
+    ) -> None:
+        link = self._store.get(node, external_id)
+        if link is None:
+            return
+        link.last_written = Snapshot.of(written)
+        link.last_synced = Snapshot.of(synced)
+        link.last_seen_at = now
+
+    def _refresh_source(self, action: Action, context: _CycleContext, now: str) -> None:
+        """Record the consumed change on the opposite side of the same canonical task."""
+        for link in self._store.links_of(action.canonical_id).values():
+            if link.node == action.node or link.tombstone:
+                continue
+            if (link.node, action.canonical_id) in context.targeted:
+                continue
+            current = context.snaps.get(link.node, {}).get(link.external_id)
+            if current is None:
+                continue
+            snapshot = Snapshot.of(current)
+            link.last_observed = snapshot
+            link.last_synced = snapshot
+            link.last_seen_at = now
+
+    def _entomb(self, node: str, canonical_id: str, external_id: str, now: str) -> None:
+        link = self._store.get(node, external_id) if external_id else None
+        if link is None:
+            link = Link(canonical_id=canonical_id, node=node, external_id=external_id)
+            self._store.upsert(link)
+        link.tombstone = True
+        link.tombstone_at = now
+        link.last_seen_at = now
 
     def _decide(
         self,
@@ -358,6 +521,15 @@ class SyncEngine:
             if allows(pair.a_to_b, "create") and passes_filter(pair.a_to_b, task):
                 actions.append(
                     Action(
+                        kind="link",
+                        node=pair.a,
+                        canonical_id=canonical_id,
+                        external_id=external_id,
+                        reason="new on A",
+                    )
+                )
+                actions.append(
+                    Action(
                         kind="create",
                         node=pair.b,
                         canonical_id=canonical_id,
@@ -378,6 +550,15 @@ class SyncEngine:
         for external_id, task in new_b.items():
             canonical_id = self._store.new_canonical_id()
             if allows(pair.b_to_a, "create") and passes_filter(pair.b_to_a, task):
+                actions.append(
+                    Action(
+                        kind="link",
+                        node=pair.b,
+                        canonical_id=canonical_id,
+                        external_id=external_id,
+                        reason="new on B",
+                    )
+                )
                 actions.append(
                     Action(
                         kind="create",

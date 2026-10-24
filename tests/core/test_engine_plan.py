@@ -65,8 +65,8 @@ async def test_new_item_in_a_plans_create_in_b() -> None:
     store.mark_pair_initialized(PAIR.id)
     result = await engine.run_pair(PAIR, dry_run=True)
     assert result.ok is True
-    assert _kinds(result) == [("create", NODE_B)]
-    assert result.actions_planned[0].task == TASK
+    assert _kinds(result) == [("link", NODE_A), ("create", NODE_B)]
+    assert result.actions_planned[1].task == TASK
 
 
 async def test_change_in_a_plans_update_in_b() -> None:

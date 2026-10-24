@@ -157,7 +157,7 @@ A match: equal `title` and equal downgraded `due` (downgrade to the weaker of th
 
 Implement `SyncEngine.run_pair` up to and including step 7, always returning the plan with `dry_run=True`. Execution (step 8) is in T-13. Plan tests: new item in A → `create` in B; change in A → `update` in B; `complete`; deletion with the three `delete` values; conflict between two sides; the initial cycle discards deletions; `NodeUnavailable` → `ok=False`, empty plan.
 
-## T-13. Engine: execution and saving
+## ✅ T-13. Engine: execution and saving
 
 **Read:** ARCHITECTURE §6.1 step 8, SPEC FR-7.
 **Files:** `core/engine.py`, `tests/core/test_engine_apply.py`.
