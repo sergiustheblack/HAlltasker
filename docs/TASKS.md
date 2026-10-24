@@ -164,7 +164,7 @@ Implement `SyncEngine.run_pair` up to and including step 7, always returning the
 
 Execute actions through the plugin, update `Link`, call `store.save()` after every write, collect `actions_failed`. Tests: SPEC §7 scenarios A1–A9 on `FakePlugin` and `FakeStorage`; a repeated cycle without changes → `actions_applied` is empty and `saves` does not grow; a failed `create` on B does not block the other actions.
 
-## T-14. YAML schema and integration loading
+## ✅ T-14. YAML schema and integration loading
 
 **Read:** ARCHITECTURE §7, SPEC FR-11.
 **Files:** `schema.py`, `__init__.py`, `config_flow.py`, `strings.json`, `translations/en.json`, `translations/ru.json`, `tests/conftest.py` (already exists), `tests/test_init.py`.
