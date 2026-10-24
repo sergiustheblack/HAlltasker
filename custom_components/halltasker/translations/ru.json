@@ -1,0 +1,8 @@
+{
+  "config": {
+    "step": {},
+    "abort": {
+      "already_configured": "HAlltasker уже настроен через configuration.yaml"
+    }
+  }
+}
