@@ -9,6 +9,8 @@ readme = "README.md"
 target-version = "py314"
 line-length = 100
 src = ["custom_components", "tests"]
+# ruff >= 0.16 formats python code blocks inside markdown; docs/ is protected (AGENTS.md)
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "RUF"]
