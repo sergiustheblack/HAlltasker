@@ -136,7 +136,7 @@ def pair_up(new_a: dict[str, CanonicalTask], new_b: dict[str, CanonicalTask],
 
 A match: equal `title` and equal downgraded `due` (downgrade to the weaker of the two capabilities). Each item takes part in at most one pair. Tests: one match; two identical titles with different due; duplicates on one side are linked one by one.
 
-## T-10. Actions and result
+## ✅ T-10. Actions and result
 
 **Read:** ARCHITECTURE §6.3, §6.1 step 9.
 **Files:** `core/actions.py`, `tests/core/test_actions.py`.
