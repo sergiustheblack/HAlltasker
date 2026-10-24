@@ -1,0 +1,435 @@
+"""The sync engine: one cycle for one pair of nodes."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+import datetime as dt
+
+from ..plugins.base import NodeUnavailable
+from ..plugins.registry import PluginRegistry
+from .actions import Action, RunResult
+from .conflict import merge
+from .diff import SideState, classify
+from .link_store import LinkStore
+from .matching import pair_up
+from .model import CanonicalTask, Capabilities, DirectionRule, Link, SyncPair
+from .router import allows, apply_transform, op_for_change, passes_filter
+
+
+class SyncEngine:
+    """Joins plugins, the store, and the decision rules into one pair cycle."""
+
+    def __init__(
+        self, store: LinkStore, registry: PluginRegistry, clock: Callable[[], dt.datetime]
+    ) -> None:
+        self._store = store
+        self._registry = registry
+        self._clock = clock
+
+    async def run_pair(self, pair: SyncPair, *, dry_run: bool) -> RunResult:
+        try:
+            plan, live_links = await self._plan(pair)
+        except NodeUnavailable as err:
+            return RunResult(ok=False, error=str(err))
+        except Exception as err:
+            return RunResult(ok=False, error=f"{type(err).__name__}: {err}")
+        return RunResult(
+            ok=True,
+            error=None,
+            actions_planned=plan,
+            actions_applied=[],
+            actions_failed=[],
+            links=live_links,
+        )
+
+    async def _plan(self, pair: SyncPair) -> tuple[list[Action], int]:
+        plugin_a = self._registry.for_node(pair.a)
+        plugin_b = self._registry.for_node(pair.b)
+        caps_a = await plugin_a.capabilities(pair.a)
+        caps_b = await plugin_b.capabilities(pair.b)
+        snap_a = await plugin_a.list(pair.a)
+        snap_b = await plugin_b.list(pair.b)
+        tz = self._clock().tzinfo or dt.UTC
+
+        links = self._store.links_for_pair(pair.a, pair.b)
+        tombstoned_a: set[str] = set()
+        tombstoned_b: set[str] = set()
+        plan: list[Action] = []
+
+        for canonical_id, node_links in links.items():
+            link_a = node_links.get(pair.a)
+            link_b = node_links.get(pair.b)
+            if _is_tombstoned(link_a) or _is_tombstoned(link_b):
+                if link_a is not None:
+                    tombstoned_a.add(link_a.external_id)
+                if link_b is not None:
+                    tombstoned_b.add(link_b.external_id)
+                continue
+            state_a = classify(
+                link_a, snap_a.get(link_a.external_id) if link_a is not None else None, caps_a, tz
+            )
+            state_b = classify(
+                link_b, snap_b.get(link_b.external_id) if link_b is not None else None, caps_b, tz
+            )
+            plan.extend(self._decide(pair, canonical_id, link_a, state_a, link_b, state_b, tz))
+
+        plan.extend(
+            await self._plan_new_items(
+                pair, snap_a, snap_b, caps_a, caps_b, tombstoned_a, tombstoned_b, tz
+            )
+        )
+
+        if not self._store.pair_initialized(pair.id):
+            plan = [
+                action
+                for action in plan
+                if action.kind not in ("delete", "soft_delete", "tombstone")
+            ]
+        live_links = sum(
+            1 for node_links in links.values() for link in node_links.values() if not link.tombstone
+        )
+        return plan, live_links
+
+    def _decide(
+        self,
+        pair: SyncPair,
+        canonical_id: str,
+        link_a: Link | None,
+        state_a: SideState,
+        link_b: Link | None,
+        state_b: SideState,
+        tz: dt.tzinfo,
+    ) -> list[Action]:
+        if state_a.kind == "deleted" and state_b.kind == "deleted":
+            return self._tombstone_both(pair, canonical_id, link_a, link_b, "deleted on both")
+        if state_a.kind == "deleted":
+            return self._plan_delete(pair, canonical_id, link_a, state_a, link_b, state_b, tz)
+        if state_b.kind == "deleted":
+            return self._plan_delete(pair, canonical_id, link_b, state_b, link_a, state_a, tz)
+        if state_a.kind == "missing_link":
+            return self._plan_missing(pair, canonical_id, pair.a, state_b, link_b, tz)
+        if state_b.kind == "missing_link":
+            return self._plan_missing(pair, canonical_id, pair.b, state_a, link_a, tz)
+        if state_a.kind == "changed" and state_b.kind == "changed":
+            return self._plan_conflict(pair, canonical_id, link_a, state_a, link_b, state_b, tz)
+        if state_a.kind == "changed":
+            return self._plan_update(
+                pair.a_to_b,
+                state_a.current,
+                state_a.changed_fields,
+                pair.b,
+                canonical_id,
+                link_b.external_id if link_b is not None else None,
+                tz,
+                "changed on A",
+            )
+        if state_b.kind == "changed":
+            return self._plan_update(
+                pair.b_to_a,
+                state_b.current,
+                state_b.changed_fields,
+                pair.a,
+                canonical_id,
+                link_a.external_id if link_a is not None else None,
+                tz,
+                "changed on B",
+            )
+        return []
+
+    def _plan_update(
+        self,
+        rule: DirectionRule,
+        source: CanonicalTask,
+        changed: frozenset[str],
+        node: str,
+        canonical_id: str,
+        external_id: str | None,
+        tz: dt.tzinfo,
+        reason: str,
+    ) -> list[Action]:
+        operation = op_for_change(changed)
+        if not allows(rule, operation) or not passes_filter(rule, source):
+            return []
+        kind = "complete" if operation == "complete" else "update"
+        return [
+            Action(
+                kind=kind,
+                node=node,
+                canonical_id=canonical_id,
+                task=apply_transform(rule, source, tz),
+                external_id=external_id,
+                changed=changed,
+                reason=reason,
+            )
+        ]
+
+    def _plan_conflict(
+        self,
+        pair: SyncPair,
+        canonical_id: str,
+        link_a: Link | None,
+        state_a: SideState,
+        link_b: Link | None,
+        state_b: SideState,
+        tz: dt.tzinfo,
+    ) -> list[Action]:
+        if state_a.current is None or state_b.current is None:
+            return []
+        result, write_a, write_b = merge(
+            state_a.current,
+            state_a.changed_fields,
+            state_b.current,
+            state_b.changed_fields,
+            pair.conflict,
+        )
+        actions: list[Action] = []
+        if write_a and link_a is not None:
+            actions.append(
+                Action(
+                    kind="update",
+                    node=pair.a,
+                    canonical_id=canonical_id,
+                    task=apply_transform(pair.b_to_a, result, tz),
+                    external_id=link_a.external_id,
+                    changed=write_a,
+                    reason="conflict merged",
+                )
+            )
+        if write_b and link_b is not None:
+            actions.append(
+                Action(
+                    kind="update",
+                    node=pair.b,
+                    canonical_id=canonical_id,
+                    task=apply_transform(pair.a_to_b, result, tz),
+                    external_id=link_b.external_id,
+                    changed=write_b,
+                    reason="conflict merged",
+                )
+            )
+        return actions
+
+    def _plan_delete(
+        self,
+        pair: SyncPair,
+        canonical_id: str,
+        link_x: Link,
+        state_x: SideState,
+        link_y: Link | None,
+        state_y: SideState,
+        tz: dt.tzinfo,
+    ) -> list[Action]:
+        node_x = link_x.node
+        node_y = pair.b if node_x == pair.a else pair.a
+        rule_x_to_y = pair.a_to_b if node_x == pair.a else pair.b_to_a
+        rule_y_to_x = pair.b_to_a if node_x == pair.a else pair.a_to_b
+        prefers_x = (pair.conflict == "prefer_a") == (node_x == pair.a)
+
+        if (
+            state_y.kind == "changed"
+            and state_y.current is not None
+            and not prefers_x
+            and rule_y_to_x.create
+            and passes_filter(rule_y_to_x, state_y.current)
+        ):
+            return [
+                Action(
+                    kind="create",
+                    node=node_x,
+                    canonical_id=canonical_id,
+                    task=apply_transform(rule_y_to_x, state_y.current, tz),
+                    reason="re-created from the other side after deletion",
+                )
+            ]
+
+        if link_y is None:
+            return [
+                Action(
+                    kind="tombstone",
+                    node=node_x,
+                    canonical_id=canonical_id,
+                    external_id=link_x.external_id,
+                    reason="deleted here, absent on the other side",
+                )
+            ]
+
+        actions: list[Action] = []
+        if rule_x_to_y.delete == "true":
+            actions.append(
+                Action(
+                    kind="delete",
+                    node=node_y,
+                    canonical_id=canonical_id,
+                    external_id=link_y.external_id,
+                    reason="deleted on the other side",
+                )
+            )
+        elif rule_x_to_y.delete == "soft":
+            actions.append(
+                Action(
+                    kind="soft_delete",
+                    node=node_y,
+                    canonical_id=canonical_id,
+                    task=state_y.current,
+                    external_id=link_y.external_id,
+                    reason="deleted on the other side",
+                )
+            )
+        actions.extend(self._tombstone_both(pair, canonical_id, link_x, link_y, "deleted"))
+        return actions
+
+    def _plan_missing(
+        self,
+        pair: SyncPair,
+        canonical_id: str,
+        missing_node: str,
+        present_state: SideState,
+        present_link: Link | None,
+        tz: dt.tzinfo,
+    ) -> list[Action]:
+        rule = pair.b_to_a if missing_node == pair.a else pair.a_to_b
+        if present_state.current is None or present_link is None:
+            return []
+        if rule.create and passes_filter(rule, present_state.current):
+            return [
+                Action(
+                    kind="create",
+                    node=missing_node,
+                    canonical_id=canonical_id,
+                    task=apply_transform(rule, present_state.current, tz),
+                    reason="created on the other side",
+                )
+            ]
+        return [
+            Action(
+                kind="tombstone",
+                node=missing_node,
+                canonical_id=canonical_id,
+                reason="create not allowed",
+            )
+        ]
+
+    async def _plan_new_items(
+        self,
+        pair: SyncPair,
+        snap_a: dict[str, CanonicalTask],
+        snap_b: dict[str, CanonicalTask],
+        caps_a: Capabilities,
+        caps_b: Capabilities,
+        tombstoned_a: set[str],
+        tombstoned_b: set[str],
+        tz: dt.tzinfo,
+    ) -> list[Action]:
+        new_a = {
+            ext: task
+            for ext, task in snap_a.items()
+            if self._store.get(pair.a, ext) is None and ext not in tombstoned_a
+        }
+        new_b = {
+            ext: task
+            for ext, task in snap_b.items()
+            if self._store.get(pair.b, ext) is None and ext not in tombstoned_b
+        }
+        actions: list[Action] = []
+        for ext_a, ext_b in pair_up(new_a, new_b, caps_a, caps_b, tz):
+            canonical_id = self._store.new_canonical_id()
+            actions.append(
+                Action(
+                    kind="link",
+                    node=pair.a,
+                    canonical_id=canonical_id,
+                    external_id=ext_a,
+                    reason="matched during initial sync",
+                )
+            )
+            actions.append(
+                Action(
+                    kind="link",
+                    node=pair.b,
+                    canonical_id=canonical_id,
+                    external_id=ext_b,
+                    reason="matched during initial sync",
+                )
+            )
+            del new_a[ext_a]
+            del new_b[ext_b]
+        for external_id, task in new_a.items():
+            canonical_id = self._store.new_canonical_id()
+            if allows(pair.a_to_b, "create") and passes_filter(pair.a_to_b, task):
+                actions.append(
+                    Action(
+                        kind="create",
+                        node=pair.b,
+                        canonical_id=canonical_id,
+                        task=apply_transform(pair.a_to_b, task, tz),
+                        reason="new on A",
+                    )
+                )
+            else:
+                actions.append(
+                    Action(
+                        kind="link",
+                        node=pair.a,
+                        canonical_id=canonical_id,
+                        external_id=external_id,
+                        reason="not propagated to B",
+                    )
+                )
+        for external_id, task in new_b.items():
+            canonical_id = self._store.new_canonical_id()
+            if allows(pair.b_to_a, "create") and passes_filter(pair.b_to_a, task):
+                actions.append(
+                    Action(
+                        kind="create",
+                        node=pair.a,
+                        canonical_id=canonical_id,
+                        task=apply_transform(pair.b_to_a, task, tz),
+                        reason="new on B",
+                    )
+                )
+            else:
+                actions.append(
+                    Action(
+                        kind="link",
+                        node=pair.b,
+                        canonical_id=canonical_id,
+                        external_id=external_id,
+                        reason="not propagated to A",
+                    )
+                )
+        return actions
+
+    def _tombstone_both(
+        self,
+        pair: SyncPair,
+        canonical_id: str,
+        link_a: Link | None,
+        link_b: Link | None,
+        reason: str,
+    ) -> list[Action]:
+        actions: list[Action] = []
+        if link_a is not None:
+            actions.append(
+                Action(
+                    kind="tombstone",
+                    node=pair.a,
+                    canonical_id=canonical_id,
+                    external_id=link_a.external_id,
+                    reason=reason,
+                )
+            )
+        if link_b is not None:
+            actions.append(
+                Action(
+                    kind="tombstone",
+                    node=pair.b,
+                    canonical_id=canonical_id,
+                    external_id=link_b.external_id,
+                    reason=reason,
+                )
+            )
+        return actions
+
+
+def _is_tombstoned(link: Link | None) -> bool:
+    return link is not None and link.tombstone
