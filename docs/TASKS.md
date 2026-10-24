@@ -143,7 +143,7 @@ A match: equal `title` and equal downgraded `due` (downgrade to the weaker of th
 
 `Action`, `RunResult`, `def action_to_dict(a: Action) -> dict`. Test: serialization without `None` fields.
 
-## T-11. Plugin contract and registry
+## ✅ T-11. Plugin contract and registry
 
 **Read:** ARCHITECTURE §3.
 **Files:** `plugins/__init__.py` (empty), `plugins/base.py`, `plugins/registry.py`, `tests/core/fakes.py`, `tests/plugins/__init__.py`, `tests/plugins/test_registry.py`.
