@@ -1,0 +1,13 @@
+{
+  "domain": "halltasker",
+  "name": "HAlltasker",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["todo"],
+  "documentation": "https://github.com/s-parfyenov/HAlltasker",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/s-parfyenov/HAlltasker/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
