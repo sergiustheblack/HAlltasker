@@ -16,7 +16,7 @@ ruff check . && ruff format --check . && pytest -q
 
 ---
 
-## T-01. Manifest and package skeleton
+## ✅ T-01. Manifest and package skeleton
 
 **Read:** ARCHITECTURE §1.
 **Files:** `custom_components/halltasker/__init__.py`, `manifest.json`, `const.py`.
@@ -55,7 +55,7 @@ TOMBSTONE_TTL_DAYS = 30
 
 **Done when:** `python -c "import json; json.load(open('custom_components/halltasker/manifest.json'))"`.
 
-## T-02. Canonical model
+## ✅ T-02. Canonical model
 
 **Read:** ARCHITECTURE §2 (CanonicalTask, Snapshot, FIELDS).
 **Files:** `custom_components/halltasker/core/__init__.py` (empty), `core/model.py`, `tests/__init__.py`, `tests/core/__init__.py`, `tests/core/test_model.py`.
