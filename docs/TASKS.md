@@ -180,7 +180,7 @@ Test: `async_setup_component(hass, "halltasker", {"halltasker": {"pairs": [...]}
 
 `HaTodoPlugin(hass)`. In the test, register fake services `todo.get_items/add_item/update_item/remove_item` through `hass.services.async_register(..., supports_response=SupportsResponse.OPTIONAL)` for `get_items`. Tests: mapping of the three kinds of due; status; capabilities from `supported_features`; `update` passes only the changed fields and does not pass unsupported ones; `create` finds the uid among the items not excluded by `known_ids`; an `unavailable` entity → `NodeUnavailable`.
 
-## T-16. Coordinator
+## ✅ T-16. Coordinator
 
 **Read:** ARCHITECTURE §8.
 **Files:** `coordinator.py`, `__init__.py` (connect the coordinator, `LinkStore` on top of `homeassistant.helpers.storage.Store`), `tests/test_coordinator.py`.
