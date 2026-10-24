@@ -64,7 +64,7 @@ Implement `CanonicalTask`, `Snapshot`, `FIELDS`, and the functions `due_to_str(d
 
 Tests (minimum): round-trip `to_dict/from_dict` for due None/date/datetime; naive datetime → `ValueError`; the hash is the same for equal tasks and differs when any field changes; the order of keys in `extensions` does not affect the hash.
 
-## T-03. Remaining model structures
+## ✅ T-03. Remaining model structures
 
 **Read:** ARCHITECTURE §2 (Link, Capabilities, Filter, Transform, DirectionRule, SyncPair).
 **Files:** `core/model.py`, `tests/core/test_model.py`.

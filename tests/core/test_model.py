@@ -8,7 +8,10 @@ import pytest
 
 from custom_components.halltasker.core.model import (
     CanonicalTask,
+    DirectionRule,
+    Link,
     Snapshot,
+    SyncPair,
     due_from_str,
     due_to_str,
 )
@@ -72,3 +75,46 @@ def test_snapshot_hash_ignores_extensions_key_order() -> None:
 def test_snapshot_task_returns_equal_task() -> None:
     task = CanonicalTask(title="x", due=dt.datetime(2026, 10, 5, 23, 30, tzinfo=TZ))
     assert Snapshot.of(task).task() == task
+
+
+def test_link_round_trip_with_filled_snapshots() -> None:
+    task = CanonicalTask(title="x", description="d", due=dt.date(2026, 10, 5))
+    link = Link(
+        canonical_id="ab12",
+        node="todo.a",
+        external_id="uid-1",
+        last_observed=Snapshot.of(task),
+        last_written=Snapshot.of(task),
+        last_synced=Snapshot.of(task),
+        last_seen_at="2026-10-05T12:00:00+00:00",
+        tombstone=True,
+        tombstone_at="2026-10-05T13:00:00+00:00",
+    )
+    restored = Link.from_dict(link.to_dict())
+    assert restored == link
+    assert restored.last_observed is not None and restored.last_observed.task() == task
+
+
+def test_link_round_trip_with_empty_snapshots() -> None:
+    link = Link(canonical_id="ab12", node="todo.a", external_id="uid-1")
+    restored = Link.from_dict(link.to_dict())
+    assert restored == link
+    assert restored.last_observed is None
+    assert restored.last_written is None
+    assert restored.last_synced is None
+    assert restored.tombstone is False
+    assert restored.tombstone_at is None
+
+
+def test_sync_pair_defaults_allow_everything() -> None:
+    pair = SyncPair(id="p", a="todo.a", b="todo.b")
+    for rule in (pair.a_to_b, pair.b_to_a):
+        assert isinstance(rule, DirectionRule)
+        assert rule.create and rule.update and rule.complete
+        assert rule.delete == "true"
+        assert rule.filter.title_regex is None and rule.filter.require_due is False
+        assert rule.transform.due == "keep" and rule.transform.title_prefix == ""
+    assert pair.interval == 60
+    assert pair.conflict == "prefer_a"
+    assert pair.initial_sync == "merge"
+    assert pair.enabled is True
