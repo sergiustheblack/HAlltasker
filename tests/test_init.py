@@ -29,10 +29,8 @@ async def test_setup_from_yaml_creates_one_entry_and_parses_pairs(hass) -> None:
     await hass.async_block_till_done()
     entries: list[ConfigEntry] = hass.config_entries.async_entries(DOMAIN)
     assert len(entries) == 1
-    pairs = hass.data[DOMAIN]["pairs"]
-    assert len(pairs) == 1
-    pair = pairs[0]
-    assert pair.id == "p1"
+    coordinator = hass.data[DOMAIN]["coordinator"]
+    pair = coordinator.pairs["p1"]
     assert pair.a == "todo.list_a"
     assert pair.b == "todo.list_b"
     assert pair.interval == 30
