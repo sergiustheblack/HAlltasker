@@ -173,7 +173,7 @@ Execute actions through the plugin, update `Link`, call `store.save()` after eve
 
 Test: `async_setup_component(hass, "halltasker", {"halltasker": {"pairs": [...]}})` → one ConfigEntry, pairs parsed; invalid YAML (interval 5) → `False` and an error in the log.
 
-## T-15. Plugin `ha_todo`
+## ✅ T-15. Plugin `ha_todo`
 
 **Read:** ARCHITECTURE §4.
 **Files:** `plugins/ha_todo.py`, `tests/plugins/test_ha_todo.py`.
