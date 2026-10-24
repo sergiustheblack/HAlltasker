@@ -124,7 +124,7 @@ def merge(task_a, changed_a, task_b, changed_b, policy) -> tuple[CanonicalTask, 
 
 Non-overlapping fields are merged. Overlapping fields follow the policy. Tests: SPEC §7 scenarios A5 and A6.
 
-## T-09. Matching during the initial sync
+## ✅ T-09. Matching during the initial sync
 
 **Read:** SPEC FR-8.3.
 **Files:** `core/matching.py`, `tests/core/test_matching.py`.
