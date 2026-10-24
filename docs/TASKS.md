@@ -98,7 +98,7 @@ Tests: datetime 2026-10-05 23:30+03:00 with `caps.due="date"` and tz=+03:00 → 
 
 Tests: one per each `kind`; echo case: `last_written` with a datetime, current with a date and `caps.due="date"` → `echo`.
 
-## T-07. Router
+## ✅ T-07. Router
 
 **Read:** ARCHITECTURE §6.1 step 5, §7 (rules), SPEC FR-3.
 **Files:** `core/router.py`, `tests/core/test_router.py`.
