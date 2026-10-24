@@ -112,7 +112,7 @@ def op_for_change(changed: frozenset[str]) -> Literal["update","complete"]   # o
 
 Tests: regex filter; `require_due`; `due: date_only` gives a date; `title_prefix` is added once (if the prefix is already there, do not duplicate it); `op_for_change`.
 
-## T-08. Conflicts and merging
+## ✅ T-08. Conflicts and merging
 
 **Read:** ARCHITECTURE §6.1 step 5, SPEC FR-5.
 **Files:** `core/conflict.py`, `tests/core/test_conflict.py`.
