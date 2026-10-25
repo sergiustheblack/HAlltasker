@@ -119,21 +119,20 @@ Not included:
 1. Mode `merge` (default): all unlinked items on both sides are created on the opposite side according to the direction rules. No deletions are performed in the first cycle.
 2. Mode `dry_run`: the cycle computes the actions and publishes them to the sensor and the service response; it makes no writes. A pair in `dry_run` stays in it until the configuration is changed.
 3. Matching heuristic before creation: a pair of unlinked items with equal `title` and equal downgraded `due` is treated as one task and is linked without creating anything. The heuristic is never used for deletion.
-4. Orphan matching: before a linked task is created on the side where its link is missing, the unlinked items of that side are searched with the same heuristic. A match is linked instead of created. This covers a `create` whose item was written but whose uid was not found (FR-1.4), so that no duplicates appear on either side. Known limitation: if that side holds both the orphan and a genuinely new item with the same `title` and `due`, the first one is linked and the other is treated as new; same acceptance as in item 3.
+4. Orphan matching: before a linked task is created on the side where its link is missing, the unlinked items of that side are searched with the same heuristic. A match is linked instead of created. This covers a `create` whose item was written but whose uid was not found (FR-1.4), so that no duplicates appear on either side.
 
 ### FR-9 Polling and events
 
 1. Each pair is polled every `interval` seconds (default 60, minimum 15).
 2. A state change of any node entity (the `state_changed` event) triggers an out-of-schedule cycle for the pairs that contain this entity, with a 2-second delay to coalesce events. Events are a speed-up; polling is mandatory, because changing a title or a date does not change the state of a `todo.*` entity.
 3. An error in one pair does not affect other pairs.
-4. A cycle is limited to 120 seconds. A cycle that exceeds it is an error of that pair; the other pairs run as usual. Interrupting a cycle does not create duplicates (FR-7.2, FR-8.4).
 
 ### FR-10 Services, sensors, diagnostics
 
 1. `halltasker.sync_now` with an optional `pair_id`: an immediate cycle.
 2. `halltasker.dry_run` with an optional `pair_id`: returns the list of planned actions without writing.
 3. A sensor per pair `sensor.halltasker_<pair_id>`: state `ok | error | dry_run | disabled`; attributes `last_run`, `links`, `last_error`, `last_actions` (counters by type), `planned_actions` (for dry_run).
-4. `diagnostics.py` exports the configuration and the storage. HAlltasker has no secrets by construction; task titles and descriptions are redacted in the export, hashes, statuses and dates are kept.
+4. `diagnostics.py` exports the configuration and the storage. HAlltasker has no secrets by construction.
 5. `halltasker.reload` (admin service, no parameters): re-reads the `halltasker:` section of `configuration.yaml`, validates it, and restarts the integration with the new configuration. On a validation error the running configuration is kept and the error is logged. `homeassistant.reload_config_entry` does not re-read YAML and is therefore not a way to apply configuration changes.
 
 ### FR-11 YAML configuration
@@ -147,7 +146,6 @@ The full schema is in `docs/ARCHITECTURE.md` §7. On a schema error the integrat
 3. Configuration constraints, checked on load: the two nodes of a pair differ; no two pairs connect the same two nodes; the pairs do not form a cycle (the graph of nodes and pairs is a forest). A violation is a configuration error (FR-11).
 4. Sync cycles of different pairs never run concurrently.
 5. If an existing pair id is pointed at other nodes, its stored links are discarded with a warning in the log, and the next cycle of this pair is an initial sync (FR-8).
-6. After a pair has written into a node, the other pairs that contain this node are run out of schedule (with the FR-9.2 delay), so a change crosses several pairs within seconds rather than one polling interval per pair.
 
 ## 6. Non-functional requirements
 
@@ -212,4 +210,3 @@ Source: the initial acceptance of the T-01…T-21 implementation (`docs/IMPLEMEN
 - §6.2: end-to-end tests with an in-memory `todo` platform.
 - §7 A10–A12: acceptance scenarios for the above.
 - §8: corrected probatio/voluptuous facts.
-- From the implementer's review of v1.1: FR-9.4 cycle timeout (Q-2), FR-10.4 redaction of task texts in diagnostics (Q-3), FR-12.6 chained runs across a shared node, FR-8.4 known limitation of orphan matching.
