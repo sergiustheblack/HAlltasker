@@ -1,6 +1,6 @@
-# HAlltasker — technical specification (v1.0, 2026-10-05)
+# HAlltasker — technical specification (v1.1, 2026-10-26)
 
-Status: approved for development. Changes only by editing this file.
+Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9.
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/SPEC.md](ru/SPEC.md); if they differ, this file wins.
 
@@ -19,7 +19,7 @@ Two-way synchronization of tasks and reminders between ecosystems (Yandex Alice,
 | Yandex | Through the stock HA CalDAV to `caldav.yandex.ru` (Calendar to-do items (дело)). Status: **experimental**, confirmed by stage 0 (see `docs/RESEARCH.md`). Alice reminders with an exact time are a separate experimental scenario; if needed, the source is added by an external PR to YandexStation, not to this core |
 | Configuration | **YAML only** (`configuration.yaml`). Config/options flow in the UI is out of the MVP. Technical detail: an import flow creates one ConfigEntry from YAML for reload and diagnostics |
 | Conflicts | Policy per pair: `prefer_a` (default) or `prefer_b`. Fields changed on one side only are merged. True last-write-wins is impossible: HA does not expose task modification times |
-| Routing | Node pairs A↔B; each pair has rules for the A→B and B→A directions |
+| Routing | Node pairs A↔B; each pair has rules for the A→B and B→A directions. A node may take part in several pairs (FR-12); the pairs must not form a cycle |
 | Sync scope | create, field update, complete/uncomplete, delete. Each can be switched on and off in the rules |
 | Notifications | Duplicate notifications from different systems are accepted; the core does not interfere |
 | Users | One. Multiple accounts are not blocked: node = any `todo.*` entity, and there can be any number of them |
@@ -83,6 +83,7 @@ Not included:
 2. Default: all operations are allowed, `delete: true`, no filter, no transforms.
 3. The filter is applied to the source's canonical task before writing. A task that does not pass the filter at creation is not created on the other side and is not linked to it.
 4. The transform is applied after the filter and before the downgrade.
+5. A change on one side that the direction rule does not propagate (the operation is switched off, or the task fails the filter) is accepted on that side as the new synced state. It is not reported again in later cycles and does not leak into the other side through a later merge.
 
 ### FR-4 Change detection and echo
 
@@ -101,10 +102,11 @@ Not included:
 ### FR-6 Deletion
 
 1. A deletion is propagated only if: reading the source node finished without error, the list was read completely, the item is missing, and the link is not a tombstone.
-2. With `delete: false` in the direction, the link gets a tombstone, nothing changes on the other side, and the item on the other side is excluded from new-item detection.
-3. With `delete: soft`, the item on the other side is marked as done, and the link gets a tombstone.
-4. With `delete: true`, the item is deleted on the other side, and the link gets a tombstone.
-5. A tombstone is kept for at least 30 days, after which it may be removed when the storage is saved.
+2. With `delete: false` in the direction, both links of the task in this pair get a tombstone, nothing changes on the other side, and the item on the other side is excluded from new-item detection in this pair.
+3. With `delete: soft`, the item on the other side is marked as done, and both links get a tombstone.
+4. With `delete: true`, the item is deleted on the other side, and both links get a tombstone.
+5. A tombstone is kept for at least 30 days. After that it is removed at the end of a sync cycle, but only if the item it points to is absent from the node. A tombstone whose item still exists in the node (the `delete: false` case) is never removed, so the item does not reappear as a new one.
+6. A tombstone belongs to one pair. Other pairs that contain the same node see the deletion or the "done" write as an ordinary change and apply their own rules (FR-12).
 
 ### FR-7 Idempotency and storage
 
@@ -117,6 +119,7 @@ Not included:
 1. Mode `merge` (default): all unlinked items on both sides are created on the opposite side according to the direction rules. No deletions are performed in the first cycle.
 2. Mode `dry_run`: the cycle computes the actions and publishes them to the sensor and the service response; it makes no writes. A pair in `dry_run` stays in it until the configuration is changed.
 3. Matching heuristic before creation: a pair of unlinked items with equal `title` and equal downgraded `due` is treated as one task and is linked without creating anything. The heuristic is never used for deletion.
+4. Orphan matching: before a linked task is created on the side where its link is missing, the unlinked items of that side are searched with the same heuristic. A match is linked instead of created. This covers a `create` whose item was written but whose uid was not found (FR-1.4), so that no duplicates appear on either side.
 
 ### FR-9 Polling and events
 
@@ -130,15 +133,24 @@ Not included:
 2. `halltasker.dry_run` with an optional `pair_id`: returns the list of planned actions without writing.
 3. A sensor per pair `sensor.halltasker_<pair_id>`: state `ok | error | dry_run | disabled`; attributes `last_run`, `links`, `last_error`, `last_actions` (counters by type), `planned_actions` (for dry_run).
 4. `diagnostics.py` exports the configuration and the storage. HAlltasker has no secrets by construction.
+5. `halltasker.reload` (admin service, no parameters): re-reads the `halltasker:` section of `configuration.yaml`, validates it, and restarts the integration with the new configuration. On a validation error the running configuration is kept and the error is logged. `homeassistant.reload_config_entry` does not re-read YAML and is therefore not a way to apply configuration changes.
 
 ### FR-11 YAML configuration
 
-The full schema is in `docs/ARCHITECTURE.md` §7. On a schema error the integration does not start and writes a clear message to the log. Reload through the service `homeassistant.reload_config_entry` or by restarting HA.
+The full schema is in `docs/ARCHITECTURE.md` §7. On a schema error the integration does not start and writes a clear message to the log. Reload through the service `halltasker.reload` (FR-10.5) or by restarting HA.
+
+### FR-12 Several pairs per node
+
+1. The same `todo.*` entity may be a node of several pairs, for example `yandex ↔ icloud`, `yandex ↔ google`, `yandex ↔ home_list`.
+2. Each pair keeps its own links and tombstones. A write that one pair makes into a shared node is an ordinary external change for every other pair that contains this node; this is how a change travels across pairs. No pair reads another pair's links.
+3. Configuration constraints, checked on load: the two nodes of a pair differ; no two pairs connect the same two nodes; the pairs do not form a cycle (the graph of nodes and pairs is a forest). A violation is a configuration error (FR-11).
+4. Sync cycles of different pairs never run concurrently.
+5. If an existing pair id is pointed at other nodes, its stored links are discarded with a warning in the log, and the next cycle of this pair is an initial sync (FR-8).
 
 ## 6. Non-functional requirements
 
 1. Code follows HA core standards: asyncio, type annotations, `ruff` with no findings, configuration in `pyproject.toml`.
-2. Tests: `pytest` + `pytest-homeassistant-custom-component`. The core (`core/`) is tested without HA. The `ha_todo` plugin is tested with substituted services. Core coverage is not below 90 %.
+2. Tests: `pytest` + `pytest-homeassistant-custom-component`. The core (`core/`) is tested without HA. The `ha_todo` plugin is tested with substituted services. In addition, end-to-end tests run the real `todo.*` services of HA against an in-memory `todo` platform defined inside `tests/`. Core coverage is not below 90 %.
 3. Logs: `INFO` one line per pair cycle with counters, `DEBUG` action details, `WARNING` for node errors. Task content appears in logs only at `DEBUG`.
 4. HACS: `hacs.json` and `manifest.json` with a version; they pass `hassfest` and `hacs/action`.
 5. External dependencies: only what already exists in HA. New packages in the manifest `requirements` are forbidden for the MVP.
@@ -160,6 +172,9 @@ Environment: two `local_todo` entities in a test HA.
 7. Node B with `supported_features` lacking `SET_DUE_DATETIME_ON_ITEM`: a `due` with time from A is written as a date in B; reading the date back is not counted as a change.
 8. `dry_run`: actions are listed, no writes.
 9. Initial `merge` sync with identical existing tasks on both sides: they are linked without duplicates.
+10. Three nodes A, B, C and two pairs A↔B, B↔C. Create in A → it appears in B after the first pair's cycle and in C after the second pair's cycle. Delete in A with `delete: true` in both pairs → deleted in B and then in C. Repeated cycles of both pairs make no writes.
+11. Direction A→B with `update: false`. Change `title` in A → B unchanged; a later change of `due` in B → `due` changes in A, `title` in B stays as it was.
+12. `create` on B succeeded, but the uid lookup failed (simulated): the next cycle links the orphan item in B instead of creating a second one; no duplicate appears in A or B.
 
 ### B. Integration tests with stock integrations (mandatory, manual)
 
@@ -181,4 +196,17 @@ Environment: two `local_todo` entities in a test HA.
 | Google Tasks loses the time of day | `date_only` downgrade, not a conflict |
 | The `add_item` service does not return a uid | Re-read and match by content (FR-1.4) |
 | Duplicates when a failure occurs between the write and the storage save | Save after every write (FR-7.2) |
-| HA 2026.11 moves from voluptuous to probatio | The schema is isolated in a single file `schema.py`; the HA version is pinned in `requirements_dev.txt` |
+| HA is migrating its schemas from voluptuous to probatio (probatio ships since 2026.9; most of core is still on voluptuous) | The schema is isolated in a single file `schema.py`; the HA version is pinned in `requirements_dev.txt`; re-check on every HA upgrade |
+
+## 9. Changes in v1.1 (2026-10-26)
+
+Source: the initial acceptance of the T-01…T-21 implementation (`docs/IMPLEMENTATION_NOTES.md`, `docs/LINK_CHECK.md`, Q-1). No requirement of v1.0 was withdrawn.
+
+- §2 Routing, FR-12: several pairs per node, with per-pair links and tombstones; forest-only configuration; no concurrent cycles.
+- FR-3.5: a change that a rule does not propagate is accepted locally.
+- FR-6.2–6.4: tombstones are set on both links of the pair. FR-6.5: the purge happens at the end of a cycle and only for items that are gone. FR-6.6: tombstones are per pair.
+- FR-8.4: orphan matching before `create`.
+- FR-10.5, FR-11: own `halltasker.reload` service, because `homeassistant.reload_config_entry` does not re-read YAML.
+- §6.2: end-to-end tests with an in-memory `todo` platform.
+- §7 A10–A12: acceptance scenarios for the above.
+- §8: corrected probatio/voluptuous facts.

@@ -6,13 +6,13 @@
 
 ### Яндекс Алиса
 
-- Публичного API напоминаний нет. Сообщество HA использует приватные API `iot.quasar.yandex.ru` и `rpc.alice.yandex.ru` через [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation). В YandexStation есть будильники (`gproxy/get_alarms`, `create_alarm`, `change_alarm`, `cancel_alarms` → сущность `calendar`) и синхронизация списка покупок с любой `todo.*` через текстовую команду колонке и парсинг ответа (`hass/todo_list.py`, `hass/shopping_list.py`). Напоминаний нет ни в каком виде.
-- Данные Алисы попадают в Яндекс Календарь: часть как события, часть как дела, напоминания с датой срабатывания «особняком» ([iphones.ru](https://www.iphones.ru/iNotes/kak-sozdavat-napominaniya-na-iphone-pri-pomoshchi-alisy-ot-yandeks-12-29-2021), [qna.habr.com](https://qna.habr.com/q/637480)). Автор статьи на iphones.ru видел «Напомни купить хлеб завтра» как запись в iPhone Reminders через CalDAV Яндекса.
+- Публичного API напоминаний нет. Сообщество HA использует приватные API `iot.quasar.yandex.ru` и `rpc.alice.yandex.ru` через [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation). В YandexStation есть будильники (`gproxy/get_alarms`, `create_alarm`, `change_alarm`, `cancel_alarms` → сущность `calendar`) и синхронизация списка покупок с любой `todo.*` через текстовую команду колонке и парсинг ответа (`hass/todo_list.py`, `hass/shopping_list.py`). Напоминаний нет ни в каком виде; [issue #587 «Add reminders support»](https://github.com/AlexxIT/YandexStation/issues/587) открыт с 2024-12 без активности и является точкой входа для будущего внешнего PR.
+- События и дела Алисы попадают в Яндекс Календарь как VEVENT и VTODO (справка Яндекса, см. источники под картой сущностей; один ответ на [qna.habr.com](https://qna.habr.com/q/637480) указывает на боковую панель дел Календаря). Где хранятся напоминания с временем — **не подтверждено**: статья 2021 года на [iphones.ru](https://www.iphones.ru/iNotes/kak-sozdavat-napominaniya-na-iphone-pri-pomoshchi-alisy-ot-yandeks-12-29-2021) видела «Напомни купить хлеб завтра» как запись в iPhone Reminders через CalDAV Яндекса, а другой ответ на qna.habr утверждает, что напоминания хранятся локально. Этап 0 (§2) решает этот вопрос.
 - Перехват голосовых фраз в HA: [dext0r/ha-yandex-station-intents](https://github.com/dext0r/ha-yandex-station-intents). [dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home) работает в обратную сторону (HA → Алиса) и для чтения напоминаний не подходит.
 
 ### Яндекс Календарь CalDAV
 
-- Сервер `https://caldav.yandex.ru`, логин — полный e-mail, пароль приложения «Календарь CalDAV» ([справка](https://yandex.ru/support/calendar/common/sync/sync-desktop.html)).
+- Сервер `https://caldav.yandex.ru`, логин — полный e-mail, пароль приложения типа «Календарь» (в старых страницах справки — «Календарь CalDAV») ([справка](https://yandex.ru/support/calendar/common/sync/sync-desktop.html)).
 - Дела лежат в коллекциях `/calendars/<login>@yandex.ru/todos-<id>/` как VTODO, `PRODID:-//Yandex LLC//Yandex Calendar//EN` ([tasks/tasks#1537](https://github.com/tasks/tasks/issues/1537)). Автодискавери `calendar-home-set` у некоторых клиентов ломается.
 
 ### Карта сущностей Алисы
@@ -25,28 +25,28 @@
 | Список покупок | «Добавь молоко в список покупок», «Попроси Список покупок список» | Отдельный навык | API нет; мост в YandexStation через речь |
 | Будильник, таймер | «Буди меня по субботам в 9», «Таймер на 45 секунд» | Локально на колонке | Будильники в YandexStation; вне scope |
 
-Источники: [yaboard wiki](https://wiki.yaboard.com/w/%D0%94%D0%B5%D0%BB%D0%B0,_%D0%BD%D0%B0%D0%BF%D0%BE%D0%BC%D0%B8%D0%BD%D0%B0%D0%BD%D0%B8%D1%8F,_%D0%B1%D1%83%D0%B4%D0%B8%D0%BB%D1%8C%D0%BD%D0%B8%D0%BA%D0%B8_%D0%B8_%D1%82%D0%B0%D0%B9%D0%BC%D0%B5%D1%80%D1%8B), [Управление с помощью Алисы](https://yandex.ru/support/yandex-360/customers/calendar/web/ru/alice), [Список дел](https://yandex.ru/support/yandex-360/customers/calendar/web/ru/reminders/to-do), [команды напоминаний](https://alice.yandex.ru/support/ru/station/skills/reminder), [настройка напоминаний](https://alice.yandex.ru/support/ru/station/settings/reminder).
+Источники: [yaboard wiki](https://wiki.yaboard.com/w/%D0%94%D0%B5%D0%BB%D0%B0,_%D0%BD%D0%B0%D0%BF%D0%BE%D0%BC%D0%B8%D0%BD%D0%B0%D0%BD%D0%B8%D1%8F,_%D0%B1%D1%83%D0%B4%D0%B8%D0%BB%D1%8C%D0%BD%D0%B8%D0%BA%D0%B8_%D0%B8_%D1%82%D0%B0%D0%B9%D0%BC%D0%B5%D1%80%D1%8B) (доступна только из российских сетей), [Управление с помощью Алисы](https://yandex.ru/support/yandex-360/customers/calendar/web/ru/alice), [Список дел](https://yandex.ru/support/yandex-360/customers/calendar/web/ru/reminders/to-do), [команды напоминаний](https://alice.yandex.ru/support/ru/station/skills/reminder), [настройка напоминаний](https://alice.yandex.ru/support/ru/station/settings/reminder).
 
 ### Apple Reminders
 
-- С iOS 13 «upgraded» списки Reminders хранятся в приватном CloudKit и через CalDAV не видны ([2Do FAQ](https://www.2doapp.com/docs/faqs/data-deleted-after-ios-13-catalina-upgrade/), [Apple Community](https://discussions.apple.com/thread/253490589)).
-- `caldav.icloud.com` отдаёт VTODO-коллекции с паролем приложения; на iPhone iCloud нужно добавить как отдельный CalDAV-аккаунт, тогда списки видны в Reminders как «сторонние», без тегов и smart lists ([icloud-reminders-mcp](https://lobehub.com/mcp/lingnik-icloud-reminders-mcp), [heywoodlh.io](https://heywoodlh.io/cross-platform-icloud/)).
-- HA Companion iOS доступа к Reminders не даёт ([feature request](https://community.home-assistant.io/t/apple-reminders/687188), [WTH](https://community.home-assistant.io/t/wth-apple-reminders-in-todo/802169)). Обходы: Shortcuts ([simplyexplained](https://simplyexplained.com/blog/integrate-home-assistant-with-apple-reminders/)), скрипт на Mac ([sabbaken](https://github.com/sabbaken/apple-reminders-sync-to-home-assistant)), CalDAV частично ([community](https://community.home-assistant.io/t/caldav-and-to-do/652642)).
+- С iOS 13 «upgraded» списки Reminders хранятся в приватном хранилище синхронизации Apple (CloudKit) и через CalDAV не видны ([2Do FAQ](https://www.2doapp.com/docs/faqs/data-deleted-after-ios-13-catalina-upgrade/), [Apple Community](https://discussions.apple.com/thread/253490589) — тред закрыт проверкой Apple на ботов и может не загружаться автоматическими сборщиками; [BusyCal FAQ](https://www.busymac.com/docs/faqs/112990-reminders-in-ios-13-and-macos-catalina-drops-support-for-caldav)). Актуально и в конце 2026.
+- `caldav.icloud.com` отдаёт оставшиеся не-«upgraded» списки как VTODO-коллекции с паролем приложения; на некоторых аккаунтах это ноль списков ([icloud-reminders-mcp](https://github.com/Lingnik/icloud-reminders-mcp)). На iPhone iCloud нужно добавить как отдельный CalDAV-аккаунт, тогда такие списки видны в Reminders как «сторонние», без тегов и smart lists ([heywoodlh.io](https://heywoodlh.io/cross-platform-icloud/)).
+- HA Companion iOS доступа к Reminders не даёт ([feature request](https://community.home-assistant.io/t/apple-reminders/687188), всё ещё открыт; [тред WTH](https://community.home-assistant.io/t/wth-apple-reminders-in-todo/802169) закрыт в день открытия). Обходы: Shortcuts, только в направлении HA → Reminders ([simplyexplained](https://simplyexplained.com/blog/integrate-home-assistant-with-apple-reminders/)), двусторонний скрипт на Mac через EventKit ([sabbaken](https://github.com/sabbaken/apple-reminders-sync-to-home-assistant), мало пользователей), CalDAV частично ([community](https://community.home-assistant.io/t/caldav-and-to-do/652642)).
 
 ### Google
 
-- Keep reminders и Assistant reminders мигрированы в Google Tasks в 2025–2026 ([9to5google](https://9to5google.com/2025/10/14/google-keep-tasks-reminders-rolling-out/), [support.google.com](https://support.google.com/tasks/answer/16540694?hl=en)).
+- Assistant reminders переезжают в Google Tasks с 2023 года; Keep reminders последовали во второй половине 2025 ([9to5google](https://9to5google.com/2025/10/14/google-keep-tasks-reminders-rolling-out/), [support.google.com](https://support.google.com/tasks/answer/16540694?hl=en)).
 - Публичный [Tasks API](https://developers.google.com/workspace/tasks/reference/rest) хранит только дату в `due`, время отбрасывается, recurrence недоступна ([Tasks.org](https://tasks.org/docs/sync_google_tasks/)). Keep API только enterprise, без напоминаний.
 
 ### Home Assistant
 
-- Домен `todo`: `TodoItem(uid, summary, status, due, description)`, `TodoListEntityFeature` биты 1/2/4/8/16/32/64, сервисы `get_items`, `add_item`, `update_item`, `remove_item`, `remove_completed_items` ([dev docs](https://developers.home-assistant.io/docs/core/entity/todo/)). Исходники проверены для 2026.9.
-- Штатные интеграции: [CalDAV](https://www.home-assistant.io/integrations/caldav/) (обновление ~15 мин, iCloud поддерживается, datetime поддерживается), [Google Tasks](https://www.home-assistant.io/integrations/google_tasks/) (без datetime), Local To-do, Shopping List (без due и description).
-- Стабильная версия на 2026-10-05: 2026.9.4, Python ≥ 3.14.2, схемы на voluptuous. В dev-ветке (2026.11) переход на `probatio`.
+- Домен `todo`: `TodoItem(uid, summary, status, due, description, completed)`, `TodoListEntityFeature` биты 1/2/4/8/16/32/64, сервисы `get_items`, `add_item`, `update_item`, `remove_item`, `remove_completed_items` ([документация для разработчиков](https://contributors.home-assistant.io/core/entities/todo/)). Исходники проверены для 2026.9.4. `add_item` не возвращает ответ в 2026.9 и 2026.10.
+- Штатные интеграции: [CalDAV](https://www.home-assistant.io/integrations/caldav/) (обновление ~15 мин, iCloud поддерживается, datetime поддерживается по исходному коду; списки дел требуют настройки через UI, у YAML-настройки CalDAV списков дел нет), [Google Tasks](https://www.home-assistant.io/integrations/google_tasks/) (без datetime), Local To-do, Shopping List (без due и description).
+- Стабильная версия на 2026-10-05: 2026.9.4, Python ≥ 3.14.2. HA зависит от `probatio` с 2026.9 ([блог contributors](https://contributors.home-assistant.io/blog/2026/09/30/probatio-validation-engine)) и начал переводить свои схемы; почти весь core всё ещё на `voluptuous` — это настоящий пакет, подтягиваемый через зависимости HA. `schema.py` остаётся на `voluptuous`; перепроверять при каждом обновлении HA.
 
 ## 2. Этап 0: проверка CalDAV Яндекса
 
-Выполняется на аккаунте владельца. Нужны: логин `LOGIN@yandex.ru`, пароль приложения «Календарь CalDAV» (id.yandex.ru → Безопасность → Пароли приложений). Результаты записать в §4.
+Выполняется на аккаунте владельца. Нужны: логин `LOGIN@yandex.ru`, пароль приложения типа «Календарь» (id.yandex.ru → Безопасность → Пароли приложений). Результаты записать в §4.
 
 ### Шаг 1. Список коллекций
 

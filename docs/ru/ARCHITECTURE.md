@@ -1,8 +1,8 @@
-# HAlltasker — архитектура (v1.0, 2026-10-05)
+# HAlltasker — архитектура (v1.1, 2026-10-26)
 
 > Язык: русская копия для чтения (основной язык для людей). Обязательная версия для агентов — английская: [docs/ARCHITECTURE.md](../ARCHITECTURE.md). При расхождении действует английская.
 
-Документ описывает, **как** реализуется `docs/SPEC.md`. Сигнатуры и структуры данных здесь обязательны к исполнению: задачи в `docs/TASKS.md` ссылаются на них по именам.
+Документ описывает, **как** реализуется `docs/SPEC.md`. Сигнатуры и структуры данных здесь обязательны к исполнению: задачи в `docs/TASKS.md` ссылаются на них по именам. Изменения относительно v1.0 перечислены в §14.
 
 ## 1. Обзор
 
@@ -16,11 +16,11 @@ Home Assistant
             ▲  │  сервисы todo.get_items / add_item / update_item / remove_item
             │  ▼
 custom_components/halltasker
-├── __init__.py        загрузка YAML → ConfigEntry, регистрация сервисов
-├── coordinator.py     расписание: таймер на пару + события state_changed → engine.run_pair
+├── __init__.py        загрузка YAML → ConfigEntry, регистрация сервисов (включая reload)
+├── coordinator.py     расписание: таймер на пару + события state_changed → engine.run_pair; один глобальный lock
 ├── core/
 │   ├── model.py       CanonicalTask, Snapshot, Link, SyncPair, DirectionRule, Capabilities
-│   ├── link_store.py  LinkStore поверх homeassistant.helpers.storage.Store
+│   ├── link_store.py  LinkStore (все пары) и PairLinks (пространство имён одной пары) поверх Store
 │   ├── diff.py        изменённые поля, echo-детекция
 │   ├── downgrade.py   понижение под capabilities, сравнение с учётом понижения
 │   ├── router.py      правила направления: операции, фильтр, трансформации
@@ -97,7 +97,9 @@ class Link:                    # изменяемый: обновляется д
     tombstone_at: str | None = None
 ```
 
-Одна каноническая задача имеет по одной `Link` на узел. Хранилище индексируется двумя словарями в памяти: `by_canonical[canonical_id][node] -> Link` и `by_external[(node, external_id)] -> Link`.
+**Связи привязаны к паре.** У каждой пары своё пространство имён связей и канонических id (`PairLinks`, §9). Внутри пространства имён одна каноническая задача имеет не более одной `Link` на узел, то есть не более двух связей. Один и тот же элемент `todo.*` имеет по одной независимой связи в каждой паре, в которой участвует. Пары никогда не читают и не пишут связи друг друга.
+
+Пространство имён индексируется двумя словарями в памяти: `by_canonical[canonical_id][node] -> Link` и `by_external[(node, external_id)] -> Link`.
 
 ```python
 @dataclass(frozen=True)
@@ -198,6 +200,7 @@ class NodeUnavailable(Exception): ...
 | Удаление | `todo.remove_item` с `{"entity_id": node, "item": [uid]}` |
 | Capabilities | `hass.states.get(node).attributes.get("supported_features", 0)`; биты: CREATE=1, DELETE=2, UPDATE=4, MOVE=8, SET_DUE_DATE=16, SET_DUE_DATETIME=32, SET_DESCRIPTION=64 |
 | Недоступность | `hass.states.get(node)` вернул `None`, или `state in ("unavailable", "unknown")` → `NodeUnavailable` |
+| Поле `completed` | С HA 2026.9 у `TodoItem` есть `completed: datetime \| None` (время выполнения), и `get_items` возвращает его, если оно задано. Плагин его игнорирует; в каноническую модель оно не входит |
 | Сервис отклоняет поле, не поддерживаемое сущностью | `ServiceValidationError`; поэтому поля фильтруются по capabilities до вызова |
 
 Известные capabilities штатных интеграций (из исходников): CalDAV — всё кроме MOVE (datetime поддерживается); Google Tasks — без SET_DUE_DATETIME (только дата); Local To-do — всё; Shopping List — без due и description.
@@ -216,35 +219,41 @@ class NodeUnavailable(Exception): ...
 ## 5. Понижение (`core/downgrade.py`)
 
 ```python
-def downgrade(task: CanonicalTask, caps: Capabilities) -> CanonicalTask:
-    # due: datetime и caps.due == "date"  -> dt_util.as_local(due).date()
+def downgrade(task: CanonicalTask, caps: Capabilities, tz: dt.tzinfo) -> CanonicalTask:
+    # due: datetime и caps.due == "date"  -> due.astimezone(tz).date()
     # due: любой и caps.due == "none"     -> None
     # description и not caps.description  -> None
     # extensions -> {} (ha_todo расширений не объявляет)
 
-def equivalent(observed: CanonicalTask, expected: CanonicalTask, caps: Capabilities) -> bool:
-    return Snapshot.of(observed).hash == Snapshot.of(downgrade(expected, caps)).hash
+def equivalent(observed: CanonicalTask, expected: CanonicalTask, caps: Capabilities,
+               tz: dt.tzinfo) -> bool:
+    return Snapshot.of(observed).hash == Snapshot.of(downgrade(expected, caps, tz)).hash
 ```
+
+`tz` — локальная тайм-зона HA. Ядро не импортирует HA, поэтому движок получает её как `clock().tzinfo` (fallback `dt.UTC`); интеграция передаёт `clock=dt_util.now`.
 
 Трансформация `due: date_only` из правила направления выполняется до понижения тем же преобразованием, что и для `caps.due == "date"`.
 
 ## 6. Движок (`core/engine.py`)
 
-Один цикл для одной пары. Весь алгоритм — последовательность чистых функций плюс операции записи. Никакого параллелизма внутри пары.
+Один цикл для одной пары. Весь алгоритм — последовательность чистых функций плюс операции записи. Никакого параллелизма внутри пары и никакого параллелизма между парами: координатор выполняет не более одного цикла одновременно (§8).
 
 ```python
 class SyncEngine:
-    def __init__(self, store: LinkStore, registry: PluginRegistry, clock: Callable[[], dt.datetime]): ...
+    def __init__(self, store: PairLinks, registry: PluginRegistry, clock: Callable[[], dt.datetime]): ...
 
     async def run_pair(self, pair: SyncPair, *, dry_run: bool) -> RunResult:
         ...
 ```
 
+Экземпляр движка работает с **пространством имён одной пары**: координатор строит его на каждый цикл как `SyncEngine(link_store.for_pair(pair), registry, clock)`. Внутри движка `self._store` — это `PairLinks` (§9) с теми же методами работы со связями, что и у `LinkStore` v1.0. Поскольку пара видит только свои связи, запись, сделанная парой P1 в узел Y, для любой другой пары, содержащей Y, — обычное внешнее изменение. Так изменения проходят через общий узел (SPEC FR-12).
+
 ### 6.1 Шаги
 
 1. **Плагины и capabilities.** `pa = registry.for_node(pair.a)`, `pb = ...`. `caps_a = await pa.capabilities(pair.a)`, `caps_b`. `NodeUnavailable` → `RunResult(error=...)`, выход.
 2. **Полное чтение.** `snap_a = await pa.list(pair.a)`, `snap_b`. Исключение → выход с ошибкой. Дальше считается, что оба списка полные (FR-6.1).
-3. **Состояние связей.** `links = store.links_for_pair(pair.a, pair.b)` — все канонические задачи, у которых есть связь хотя бы с одним из двух узлов. Tombstone-связи попадают в `tombstoned_ext_ids` по узлу и дальше пропускаются.
+3. **Состояние связей.** `links = store.links_for_pair(pair.a, pair.b)` — все канонические задачи пространства имён этой пары. Если хотя бы одна связь канонической задачи — tombstone, оба её external id попадают в множества `tombstoned` по узлу, и задача дальше пропускается.
+3a. **Новые элементы.** До цикла по каноническим задачам вычислить `new_a = {eid: task for eid, task in snap_a.items() if store.get(pair.a, eid) is None and eid not in tombstoned_a}` и аналогично `new_b`. Эти словари изменяемы до конца цикла: шаг 5 (сопоставление сирот) может удалять записи; шаг 6 планирует остальное.
 4. **Классификация по каждой канонической задаче** (`core/diff.py`):
 
    ```python
@@ -253,7 +262,8 @@ class SyncEngine:
        kind: Literal["unchanged", "changed", "deleted", "echo", "missing_link"]
        current: CanonicalTask | None
        changed_fields: frozenset[str]     # относительно link.last_synced
-   def classify(link: Link | None, current: CanonicalTask | None, caps: Capabilities) -> SideState
+   def classify(link: Link | None, current: CanonicalTask | None, caps: Capabilities,
+                tz: dt.tzinfo) -> SideState
    ```
 
    Правила `classify`:
@@ -274,15 +284,27 @@ class SyncEngine:
    | deleted | unchanged/echo/changed | см. §6.2 |
    | unchanged/echo/changed | deleted | симметрично |
    | deleted | deleted | `TombstoneAction` |
-   | missing_link | changed/unchanged | `router.plan_create(pair.b_to_a, task_b)` → `CreateAction(A)` или `TombstoneAction`-подобная пометка «не синхронизировать» (`LinkOnlyAction` с `tombstone=True` на стороне A) |
+   | missing_link на X | changed/unchanged | **сначала сопоставление сирот** (ниже); если сирота не найден: `create` на X, когда правило в сторону X разрешает `create` и фильтр пройден, иначе `tombstone` на X («create not allowed») |
    | changed/unchanged | missing_link | симметрично |
 
    `complete`: изменение только поля `status` считается операцией `complete` и проверяется правилом `complete`, а не `update`.
 
-6. **Новые элементы.** `new_a = {eid for eid in snap_a if (pair.a, eid) not in store.by_external}`; аналогично `new_b`. Сначала `matching.pair_up(new_a, new_b, caps_a, caps_b)` (FR-8.3): совпадение `title` и пониженного `due` → `LinkAction` на обе стороны без записи. Остальные — `CreateAction` на противоположную сторону через `router.plan_create`, если разрешено и фильтр пройден; иначе `LinkOnlyAction` (связь с одной стороной, чтобы не переобрабатывать).
-7. **Первичный цикл.** Если `store.pair_initialized(pair.id)` ложно: все `DeleteAction` и `SoftDeleteAction` отбрасываются (FR-8.1), после успешного цикла `store.mark_pair_initialized(pair.id)`.
-8. **Исполнение.** Если `dry_run or pair.initial_sync == "dry_run"` — вернуть план без записи. Иначе для каждого действия по порядку: выполнить, обновить `Link` (`last_written = Snapshot.of(downgrade(task, caps))`, `last_synced = Snapshot.of(task)`, `last_observed` обновляется при следующем чтении), `await store.save()`. Ошибка действия → записать в результат, продолжить остальные.
-9. **Результат.** `RunResult(ok: bool, error: str | None, actions_planned: list[Action], actions_applied: list[Action], actions_failed: list[tuple[Action, str]], links: int)`.
+   **Сопоставление сирот** (SPEC FR-8.4). Отсутствие связи на стороне X может означать, что более ранний `create` на X удался, но его uid не был найден (§4), и в X уже лежит несвязанный элемент-«сирота». Перед планированием `create` на X вызвать `matching.find_match(task, new_X, caps_present, caps_X, tz) -> str | None` (`core/matching.py`; тот же ключ, что у `pair_up`: равные `title` и равные `due`, пониженные до более слабых capabilities; побеждает первое совпадение в порядке словаря) с текущей задачей присутствующей стороны. Если вернулся external id: запланировать `link` на X с этим id (без записи) и удалить id из `new_X`, чтобы шаг 6 не обработал его повторно. Если вернулся `None`: планировать по таблице.
+
+   **Локально принятое изменение** (SPEC FR-3.5). Когда ровно одна сторона `changed`, другая — `unchanged` или `echo`, а решение не даёт действия (правило направления запрещает операцию или фильтр отклоняет задачу), изменение принимается на стороне-источнике: добавить `(source_link, Snapshot.of(current))` в `context.accepted`. Шаг 8 устанавливает `last_observed` и `last_synced` этой связи в этот снапшот. Без этого устаревшие `changed_fields` позже протащили бы запрещённое изменение на другую сторону через объединение при конфликте.
+
+6. **Новые элементы.** Использовать `new_a`/`new_b`, оставшиеся после шага 5. Сначала `matching.pair_up(new_a, new_b, caps_a, caps_b, tz)` (FR-8.3): совпадение `title` и пониженного `due` → `link` на обе стороны без записи. Для каждого остального нового элемента на X, со свежим каноническим id:
+   - если правило X→Y разрешает `create` и фильтр пройден: `link(X, eid)`, **затем** `create(Y)`. Связь источника идёт первой: если create не удался, следующий цикл увидит `missing_link` на Y и повторит попытку (с сопоставлением сирот);
+   - иначе: только `link(X, eid)` (причина «not propagated»), чтобы элемент не переобрабатывался.
+7. **Первичный цикл.** Если `store.pair_initialized(pair.id)` ложно: все действия `delete`, `soft_delete` и `tombstone` отбрасываются (FR-8.1; сохранённый tombstone запретил бы последующее воссоздание). После успешного цикла вызвать `store.mark_pair_initialized(pair.id)`.
+8. **Исполнение.** Если `dry_run or pair.initial_sync == "dry_run"` — вернуть план без записи. Иначе для каждого действия по порядку: выполнить, обновить `Link`, `await store.save()`. Ошибка действия → записать в результат, продолжить остальные.
+   - `create` на X: upsert связи X с `last_written = Snapshot.of(downgrade(task, caps_X, tz))`, `last_synced = Snapshot.of(task)`.
+   - `update`/`complete` на X: установить те же два снапшота на связи X.
+   - После `create`/`update`/`complete` на X **обновить источник**: для другой связи той же канонической задачи (сторона Y), если Y сама не является целью записи в этом цикле, установить `last_observed = last_synced = Snapshot.of(current_Y)`. Иначе уже обработанное изменение будет заново обнаруживаться на Y каждый цикл.
+   - `last_observed` записанной связи обновляется при следующем чтении (тогда это `echo`).
+   - После цикла: применить обновления echo (`last_observed`) и принятые изменения (`last_observed` и `last_synced`) из шага 5. Если было хотя бы одно, вызвать `await store.save()` один раз. Цикл без действий, без echo и без принятых изменений не пишет в хранилище.
+8a. **Очистка tombstone** (SPEC FR-6.5). Не в dry run. `purged = store.purge_tombstones(now=clock(), present={pair.a: snap_a.keys(), pair.b: snap_b.keys()})`. Tombstone-связь удаляется, только если она старше 30 дней **и** её external id отсутствует в текущем снимке её узла. Tombstone, чей элемент ещё существует (случай `delete: false`: элемент Y остаётся живым для пользователя), не удаляется никогда, иначе элемент через 30 дней появился бы заново как «новый» и был бы воссоздан на другой стороне. Если `purged > 0`, ещё раз `await store.save()`.
+9. **Результат.** `RunResult(ok: bool, error: str | None, actions_planned: list[Action], actions_applied: list[Action], actions_failed: list[tuple[Action, str]], links: int)`. `links` — число живых (не tombstone) записей связей в пространстве имён пары после исполнения: одна синхронизированная задача считается за 2. `run_pair` перехватывает `NodeUnavailable` и любое другое `Exception` в `RunResult(ok=False, error=...)`.
 
 ### 6.2 Удаление (FR-5.4, FR-6)
 
@@ -296,6 +318,8 @@ class SyncEngine:
 | changed | политика предпочитает X | как для unchanged |
 | changed | политика предпочитает Y и обратное правило `create` разрешено | `CreateAction(X)` с задачей Y, связь обновляется на новый external_id |
 | changed | иначе | только tombstone |
+
+«Tombstone» в этой таблице означает: обе связи канонической задачи **в этой паре** получают `tombstone = True` (для `soft` связь Y помечается tombstone после записи «done»). С этого момента эта пара игнорирует оба элемента. Другие пары не затрагиваются: запись `delete` или `soft` в Y для них — обычное изменение (элемент исчезает или становится выполненным) и обрабатывается их собственными правилами. При `false` элемент Y остаётся живым для других пар.
 
 ### 6.3 Действия (`core/actions.py`)
 
@@ -339,58 +363,125 @@ halltasker:
       b_to_a: {}
 ```
 
-Схема на `voluptuous` (HA 2026.9). `schema.py` экспортирует `CONFIG_SCHEMA` и `def parse_pairs(conf: dict) -> list[SyncPair]`. При переходе HA на `probatio` меняется только этот файл.
+Правила валидации сверх типов полей (все проверяются в `CONFIG_SCHEMA`, ошибка = интеграция не стартует):
 
-`__init__.py`: `async_setup(hass, config)` сохраняет `config[DOMAIN]` в `hass.data[DOMAIN]["yaml"]` и запускает import-flow (`hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_IMPORT}, data={})`), если ConfigEntry ещё нет. `async_setup_entry` строит `SyncCoordinator` из YAML (не из `entry.data`), регистрирует сервисы и платформу `sensor`. `async_unload_entry` останавливает координатор.
+1. Значения `id` уникальны.
+2. `a != b` в каждой паре.
+3. Никакие две пары не соединяют одни и те же два узла (в любом порядке).
+4. **Без циклов:** неориентированный граф, вершины которого — узлы, а рёбра — пары, должен быть лесом. Проверка union-find по парам по порядку: если у обоих узлов пары уже один корень, бросить `vol.Invalid(f"pairs form a cycle at pair '{id}'")`.
+
+Схема на `voluptuous`. Факты для HA 2026.9.4 (проверены в установленном пакете): HA уже зависит от `probatio==0.11.4` и начал миграцию на него (`helpers/config_validation.py` импортирует оба), но почти всё ядро HA по-прежнему использует `voluptuous` — реальный пакет, устанавливаемый через собственные зависимости HA (`annotatedyaml`, `hass_nabucasa`). `schema.py` остаётся на `voluptuous`; перепроверить при повышении закреплённой версии HA. При переходе на `probatio` меняется только `schema.py`. `schema.py` экспортирует `CONFIG_SCHEMA` и `def parse_pairs(conf: dict) -> list[SyncPair]`; HA читает `CONFIG_SCHEMA` из модуля интеграции, поэтому `__init__.py` реэкспортирует её (указана в `__all__`).
+
+`__init__.py`:
+
+- `async_setup(hass, config)` сохраняет `config[DOMAIN]` в `hass.data[DOMAIN]["yaml"]`, регистрирует сервис `reload` (ниже) и, если ConfigEntry ещё нет, запускает import-flow через `hass.async_create_task(hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_IMPORT}, data={}))`. `await` для `async_init` внутри `async_setup` приводит к deadlock при настройке.
+- `async_setup_entry` строит `LinkStore`, `PluginRegistry` и `SyncCoordinator` из `hass.data[DOMAIN]["yaml"]` (не из `entry.data`), регистрирует `sync_now`/`dry_run` и подключает платформу `sensor` через `hass.config_entries.async_forward_entry_setups(entry, ["sensor"])`.
+- `async_unload_entry` останавливает координатор, выгружает платформу через `hass.config_entries.async_unload_platforms(entry, ["sensor"])` и удаляет `sync_now`/`dry_run`.
+
+**Перезагрузка** (SPEC FR-10.5). `homeassistant.reload_config_entry` **не** перечитывает `configuration.yaml`: запись пересобирается из YAML, загруженного при старте. Поэтому у HAlltasker есть собственный сервис `halltasker.reload`:
+
+```python
+from homeassistant.helpers.reload import async_integration_yaml_config
+from homeassistant.helpers.service import async_register_admin_service
+
+async def _handle_reload(call: ServiceCall) -> None:
+    config = await async_integration_yaml_config(hass, DOMAIN)   # проверено CONFIG_SCHEMA; None при ошибке
+    if config is None or DOMAIN not in config:
+        _LOGGER.error("halltasker: reload skipped, configuration is missing or invalid")
+        return
+    hass.data[DOMAIN]["yaml"] = config[DOMAIN]
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        await hass.config_entries.async_reload(entry.entry_id)
+
+async_register_admin_service(hass, DOMAIN, "reload", _handle_reload)   # в async_setup
+```
+
+`async_integration_yaml_config` импортируется в пространство имён `__init__.py` по имени, чтобы тесты могли патчить `custom_components.halltasker.async_integration_yaml_config`.
 
 ## 8. Координатор (`coordinator.py`)
 
 ```python
 class SyncCoordinator:
-    def __init__(self, hass, pairs: list[SyncPair], engine: SyncEngine): ...
+    def __init__(self, hass, pairs: list[SyncPair],
+                 engine_factory: Callable[[SyncPair], SyncEngine]): ...
     async def async_start(self) -> None:
         # для каждой пары: async_track_time_interval(hass, cb, timedelta(seconds=pair.interval))
         # для всех узлов: async_track_state_change_event(hass, entity_ids, on_state) → debounce 2 с → run пар с этим узлом
         # первый запуск всех пар через 10 с после старта
     async def async_stop(self) -> None: ...
     async def async_run_pair(self, pair_id: str, *, dry_run: bool = False) -> RunResult:
-        # asyncio.Lock на пару: одновременные запуски сериализуются
+        # ОДИН asyncio.Lock, общий для всех пар: в любой момент выполняется не более одного цикла
+        # engine = self._engine_factory(pair); result = await engine.run_pair(pair, dry_run=dry_run)
     @property
     def results(self) -> dict[str, RunResult]:   # последний результат на пару, читает сенсор
     def subscribe(self, cb: Callable[[str], None]) -> Callable[[], None]:   # уведомление сенсоров
 ```
 
+В `__init__.py`: `engine_factory = lambda pair: SyncEngine(link_store.for_pair(pair), registry, clock=dt_util.now)`.
+
+Почему один глобальный lock: пары с общим узлом читают и пишут одну и ту же сущность `todo.*`. Два одновременных цикла могли бы перемешать `create` одной пары с поиском uid для `create` другой (§4), а хранилище сохраняется целиком. Циклы короткие (несколько вызовов сервисов), поэтому их сериализация ничего заметного не стоит.
+
+Факты HA (2026.9): функция, передаваемая в `async_call_later` или `async_track_time_interval`, должна сама быть декорирована `@callback` (декорировать фабрику, которая её возвращает, недостаточно); иначе она выполняется в executor, и `hass.async_create_task` бросает `RuntimeError` о потокобезопасности.
+
 ## 9. Хранилище (`core/link_store.py`)
 
-`Store(hass, version=1, key="halltasker")`. Формат:
+`Store(hass, version=1, key="halltasker")`. Версия HA store остаётся 1; наш собственный формат данных версионируется ключом `schema` внутри данных. Формат (schema 2):
 
 ```json
 {
-  "links": [ {Link как dict} ],
-  "initialized_pairs": ["yandex_to_icloud"]
+  "schema": 2,
+  "pairs": {
+    "yandex_to_icloud": {
+      "nodes": ["todo.yandex_dela", "todo.icloud_reminders"],
+      "initialized": true,
+      "links": [ {Link as dict} ]
+    }
+  }
 }
 ```
 
 ```python
-class LinkStore:
-    async def load(self) -> None
-    async def save(self) -> None            # Store.async_save, без задержки
+class PairLinks:
+    """Пространство имён одной пары. Те же методы работы со связями, что у LinkStore v1.0."""
+    pair_id: str
+    nodes: tuple[str, str]
     def get(self, node: str, external_id: str) -> Link | None
     def links_of(self, canonical_id: str) -> dict[str, Link]
     def links_for_pair(self, a: str, b: str) -> dict[str, dict[str, Link]]   # canonical_id -> {node: Link}
     def upsert(self, link: Link) -> None
     def new_canonical_id(self) -> str
-    def pair_initialized(self, pair_id: str) -> bool
-    def mark_pair_initialized(self, pair_id: str) -> None
-    def purge_tombstones(self, older_than_days: int = 30, now: dt.datetime) -> int
+    def pair_initialized(self, pair_id: str) -> bool        # pair_id должен равняться self.pair_id, иначе ValueError
+    def mark_pair_initialized(self, pair_id: str) -> None   # pair_id должен равняться self.pair_id, иначе ValueError
+    def purge_tombstones(self, *, older_than_days: int = 30, now: dt.datetime,
+                         present: Mapping[str, Collection[str]]) -> int
+        # удаляет tombstone-связь, только если tombstone_at < now - older_than_days
+        # И link.external_id not in present.get(link.node, ()); возвращает количество
+    async def save(self) -> None                            # делегирует владеющему LinkStore.save()
+
+class LinkStore:
+    async def load(self) -> None
+    async def save(self) -> None            # Store.async_save от to_dict(), без задержки
+    def to_dict(self) -> dict[str, Any]     # структура schema 2 выше; используется и диагностикой
+    def for_pair(self, pair: SyncPair) -> PairLinks
+    def pair_ids(self) -> list[str]         # отсортированы
 ```
 
-Ядро не импортирует HA: `LinkStore` принимает объект с методами `async_load() -> dict | None` и `async_save(dict)` (duck typing), в тестах подменяется in-memory.
+`purge_tombstones` вызывается движком в конце каждого успешного не-dry цикла (§6.1 шаг 8a); другой очистки нет.
+
+Правила:
+
+- `for_pair(pair)` возвращает существующее пространство имён для `pair.id` или создаёт пустое с `nodes = (pair.a, pair.b)` и `initialized = False`. Для одного и того же id пары всегда возвращается один и тот же объект.
+- Если у существующего пространства имён `nodes` отличаются от `{pair.a, pair.b}` (сравнение как множеств, так что перестановка `a` и `b` допустима), пользователь перенаправил существующий id пары на другие узлы: заменить пространство имён пустым для новых узлов и записать в лог `WARNING "halltasker: pair %s now connects %s and %s; its links were reset"`. Следующий цикл — первичный `merge` (SPEC FR-12.5).
+- Пространства имён для id пар, которых больше нет в конфигурации, остаются нетронутыми (временно убранная пара сохраняет свои связи).
+- `load()`: если данные `None` → пустое хранилище. Если `data.get("schema") != 2` (у данных v1.0 ключ `"links"` на верхнем уровне) → записать в лог `WARNING "halltasker: link storage format is outdated and was discarded"` и начать с пустого. Проект до релиза; первичный `merge` заново свяжет существующие задачи по эвристике сопоставления.
+
+Ядро не импортирует HA: `LinkStore` принимает объект с методами `async_load() -> dict | None` и `async_save(dict)` (duck typing), в тестах подменяется in-memory. Ядро может использовать стандартный модуль `logging`.
 
 ## 10. Сенсор и сервисы
 
 - `sensor.py`: по одному `SensorEntity` на пару, `unique_id = f"halltasker_{pair.id}"`, `name = f"HAlltasker {pair.id}"`, состояние из `RunResult`: `error` если `not ok`, `dry_run` если режим dry_run, `disabled` если `not pair.enabled`, иначе `ok`. Атрибуты по FR-10.3. Обновление по `coordinator.subscribe`.
-- Сервисы в `__init__.py`: `sync_now` (`pair_id` optional) и `dry_run` (`pair_id` optional, `SupportsResponse.ONLY`, возвращает `{"pairs": {pair_id: [actions]}}`). Описания в `services.yaml`.
+- Сервисы в `__init__.py`: `sync_now` (`pair_id` optional) и `dry_run` (`pair_id` optional, `SupportsResponse.ONLY`, возвращает `{"pairs": {pair_id: [actions]}}`), оба регистрируются в `async_setup_entry`; `reload` (без полей), регистрируется в `async_setup` через `async_register_admin_service` (§7). Без `pair_id` `sync_now` выполняет пары одну за другой в порядке конфигурации. Описания в `services.yaml`.
+- `diagnostics.py`: `{"pairs": [...], "store": link_store.to_dict(), "results": {...}}`.
 
 ## 11. Логирование
 
@@ -402,11 +493,39 @@ class LinkStore:
 - `tests/plugins/test_ha_todo.py`: `hass` фикстура из `pytest-homeassistant-custom-component`; сервисы домена `todo` регистрируются вручную через `hass.services.async_register` с записью вызовов; состояние сущности через `hass.states.async_set("todo.x", "0", {"supported_features": 127})`.
 - `tests/test_init.py`: загрузка интеграции из YAML, создание ConfigEntry, появление сенсора.
 - `tests/conftest.py`: `pytest_plugins = "pytest_homeassistant_custom_component"`, автофикстура `auto_enable_custom_integrations`.
+- `tests/todo_platform.py` + `tests/test_e2e.py`: сквозные (end-to-end) тесты через **настоящие** сервисы `todo.*`. `local_todo` в тестах использовать нельзя (ему нужен пакет `ical`, которого нет в `requirements_dev.txt`), поэтому тесты регистрируют in-memory платформу `TodoListEntity` под тестовым доменом (`MemoryTodoEntity`, устроен так же, как собственные хелперы HA в `tests/components/todo`). Это ловит то, что не могут поймать фейковые сервисы: `ServiceValidationError` на неподдерживаемых полях, настоящую сериализацию `get_items`, поиск uid.
+- В интеграционных тестах зависимость манифеста `"todo"` загружает настоящие сервисы todo; тесты, подменяющие сервисы, должны регистрировать фейки **после** настройки интеграции (побеждает последняя регистрация).
+- Часы `pytest-homeassistant-custom-component` стартуют с реального «сейчас»; использовать `dt_util.utcnow()` плюс дельты с `async_fire_time_changed`, а не фиксированные синтетические datetime.
 
 Команды: см. `CLAUDE.md`.
 
 ## 13. Расширение в будущем
 
 - Новый плагин: модуль в `plugins/`, класс наследует `Plugin`, регистрируется в `registry.py`; строка узла с префиксом `jira:PROJ-123` разбирается через `matches`. Ядро не меняется.
-- Группы из N узлов: движок уже работает с канонической задачей и набором связей; потребуется расширить `SyncPair` до `SyncGroup` и обобщить таблицу решений §6.1.
+- Группы из N узлов: в v1.1 узел уже может быть общим для нескольких пар (лес пар). Настоящая группа из N узлов с одной канонической задачей на все узлы потребовала бы нового вида пространства имён и обобщённой таблицы решений; не планируется.
 - UI: config/options flow поверх той же `parse_pairs`; YAML остаётся источником истины до отдельного решения.
+
+## 14. Изменения в v1.1 (2026-10-26)
+
+Источник: реализация T-01…T-21 в ветке `zcode`, `docs/IMPLEMENTATION_NOTES.md`, `docs/LINK_CHECK.md`, Q-1.
+
+Решения исполнителя, принятые как обязательные:
+
+- Параметр `tz` у `downgrade`/`equivalent`/`classify`; движок получает его из `clock()` (§5).
+- `purge_tombstones` принимает `now` только как keyword-аргумент (§9).
+- Новый элемент: `link(source)` перед `create(target)` (§6.1 шаг 6).
+- Обновление источника после `create`/`update`/`complete` (§6.1 шаг 8).
+- Первый цикл отбрасывает `delete`, `soft_delete` и `tombstone` (§6.1 шаг 7).
+- `RunResult.links` считает живые записи связей, по две на синхронизированную задачу (§6.1 шаг 9).
+- Сохранения хранилища: после каждого применённого действия; одно дополнительное сохранение только для обновлений echo/принятых изменений или первого цикла; цикл без действий ничего не пишет.
+- Факты HA 2026.9: `config_entries.async_forward_entry_setups`, `hass.async_create_task` для import-flow, `@callback` на замыканиях таймера, реэкспорт `CONFIG_SCHEMA`, порядок регистрации фейковых сервисов в тестах, часы phacc (§7, §8, §12).
+
+Новое в v1.1:
+
+- Несколько пар на узел (SPEC FR-12): пространства имён связей на пару (`PairLinks`, хранилище schema 2), движок на цикл через `engine_factory`, один глобальный lock, валидация «только лес» (§2, §6, §7, §8, §9).
+- Сопоставление сирот перед `create` (§6.1 шаг 5, SPEC FR-8.4).
+- Очистка tombstone перенесена в цикл движка и ограничена элементами, исчезнувшими из узла (§6.1 шаг 8a, §9, SPEC FR-6.5). В v1.0 очистка никогда не вызывалась.
+- Локально принятые изменения для операций, запрещённых правилом (§6.1 шаг 5, SPEC FR-3.5).
+- Сервис `halltasker.reload`, потому что `reload_config_entry` не перечитывает YAML (§7, SPEC FR-10.5).
+- Сквозные тесты с in-memory платформой `todo` (§12).
+- Исправленные факты: статус probatio/voluptuous в HA 2026.9 (Q-1), `TodoItem.completed` (§4, §7).
