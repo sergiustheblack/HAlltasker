@@ -100,29 +100,3 @@ Documentation fixes worth making (owner's decision — SPEC/ARCHITECTURE are fro
 4. Access notes: Apple discussions thread is bot-walled; yaboard wiki is RU-only.
 5. Minor: Yandex app password now labeled «Календарь»; WTH thread was closed on arrival;
    "2025–2026" Google migration phrasing is loose for the Assistant half.
-
-## 6. Addendum (2026-10-26): Yandex shopping list workaround gist
-
-Owner asked to evaluate [DivanX10's gist "Список покупок. Home Assistant + Яндекс"](https://gist.github.com/DivanX10/9f7bb76cd08516553b8a92dea278afd6).
-
-What it does: voice access to the HA **Shopping List** through YandexStation — a `command_line`
-sensor parses `.shopping_list.json` from disk; automations on `yandex_intent` phrases reply via
-`tts.yandex_station_say`; synchronization with the Yandex skill runs through YandexStation's
-speech bridge (`media_player.play_media` with `media_content_type: shopping_list`,
-`media_content_id: update` — the `hass/shopping_list.py` feature already cited in RESEARCH §1).
-
-Applicability to HAlltasker:
-
-- **The file-reading half is obsolete for us.** Shopping List now exposes a `todo.*` entity;
-  our `ha_todo` plugin already syncs it like any other node (capabilities drop due/description
-  automatically). Pairing `todo.shopping_list` ↔ iCloud/Google/local works with zero new code.
-- **The Yandex half is the same dead end as before.** The Yandex "Список покупок" skill has no
-  API; the only bridge is YandexStation's speech round-trip — exactly the "existing YandexStation
-  bridge" named in SPEC §2 as out of MVP. The gist's own comments confirm it is fragile:
-  races between the 60 s sensor and Alice's update can wipe the list, some product names
-  silently fail, rules are one-directional-ish, and the two platforms (Yandex skill vs HA list)
-  stay separate. The author says he barely uses it now.
-- **Recommendation:** do not put any of this into the core. At most a README recipe for
-  after-MVP: HAlltasker pair on the HA side + YandexStation speech bridge on the Yandex side,
-  with the fragility warning. If we ever want reliability there, the route is an external PR to
-  YandexStation, same as for reminders.
