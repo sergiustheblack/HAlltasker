@@ -187,7 +187,7 @@ Test: `async_setup_component(hass, "halltasker", {"halltasker": {"pairs": [...]}
 
 Tests with `async_fire_time_changed` from `pytest_homeassistant_custom_component.common`: a cycle starts on the interval; a `state_changed` event of a node starts the cycle once after the debounce; two simultaneous calls of `async_run_pair` are serialized.
 
-## T-17. Services
+## ✅ T-17. Services
 
 **Read:** ARCHITECTURE §10.
 **Files:** `__init__.py`, `services.yaml`, `strings.json`, `translations/*.json`, `tests/test_services.py`.

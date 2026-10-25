@@ -1,8 +1,24 @@
 {
-  "config": {
-    "step": {},
-    "abort": {
-      "already_configured": "HAlltasker is already configured through configuration.yaml"
+  "services": {
+    "sync_now": {
+      "name": "Sync now",
+      "description": "Run one sync cycle for a pair, or for every pair, immediately.",
+      "fields": {
+        "pair_id": {
+          "name": "Pair",
+          "description": "Id of the pair from configuration.yaml; omit to run all pairs."
+        }
+      }
+    },
+    "dry_run": {
+      "name": "Dry run",
+      "description": "Plan one cycle without writing and return the planned actions.",
+      "fields": {
+        "pair_id": {
+          "name": "Pair",
+          "description": "Id of the pair from configuration.yaml; omit to plan all pairs."
+        }
+      }
     }
   }
 }
