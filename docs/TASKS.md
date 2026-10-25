@@ -194,7 +194,7 @@ Tests with `async_fire_time_changed` from `pytest_homeassistant_custom_component
 
 `halltasker.sync_now`, `halltasker.dry_run` (with a response). Test: calling `dry_run` returns the plan for the given pair.
 
-## T-18. Sensor
+## ✅ T-18. Sensor
 
 **Read:** ARCHITECTURE §10, SPEC FR-10.3.
 **Files:** `sensor.py`, `__init__.py` (`async_forward_entry_setups(entry, ["sensor"])`), `tests/test_sensor.py`.

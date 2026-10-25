@@ -63,6 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["coordinator"] = coordinator
     await coordinator.async_start()
     _async_register_services(hass)
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     return True
 
 
@@ -72,6 +73,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if coordinator is not None:
         await coordinator.async_stop()
     hass.data[DOMAIN].pop("pairs", None)
+    await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     hass.services.async_remove(DOMAIN, SERVICE_SYNC_NOW)
     hass.services.async_remove(DOMAIN, SERVICE_DRY_RUN)
     return True
