@@ -1,3 +1,9 @@
 # Questions from agents to the owner
 
 > Language: English only. The format is described in `AGENTS.md`. Append new questions at the end. Do not delete closed ones.
+
+## Q-1 (docs) — open
+Context: link verification of external sources (2026-10-25) against docs/SPEC.md §8 (risk table), docs/ARCHITECTURE.md §7, docs/RESEARCH.md §1.
+Problem: all three docs state that HA moves from voluptuous to probatio in 2026.11 (future). In fact, per the HA contributors blog (2026-09-30) and the installed homeassistant==2026.9.4 (which requires probatio==0.11.4), probatio already shipped in 2026.9. The voluptuous API keeps working in 2026.9 through a compatibility alias, so the planned `schema.py` on voluptuous is unaffected.
+Options: 1) Update the three docs to say "probatio shipped in 2026.9; voluptuous API still works via compatibility alias". 2) Keep the docs as is and note the discrepancy here only.
+Impact: none on the code; documentation accuracy only. Also found during the same check: the dev-docs link https://developers.home-assistant.io/docs/core/entity/todo/ now redirects to contributors.home-assistant.io, and TodoItem gained a `completed` field not covered by the canonical model (MVP scope is unaffected).
