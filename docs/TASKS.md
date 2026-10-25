@@ -201,7 +201,7 @@ Tests with `async_fire_time_changed` from `pytest_homeassistant_custom_component
 
 Test: after a cycle the sensor `sensor.halltasker_<pair_id>` has the state `ok` and the attribute `links`.
 
-## T-19. Diagnostics and logging
+## ✅ T-19. Diagnostics and logging
 
 **Read:** ARCHITECTURE §11, SPEC FR-10.4.
 **Files:** `diagnostics.py`, `engine.py`/`coordinator.py` (log lines), `tests/test_diagnostics.py`.

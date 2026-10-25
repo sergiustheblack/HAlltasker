@@ -16,13 +16,14 @@ from homeassistant.helpers.event import (
 )
 
 from .const import EVENT_DEBOUNCE_SECONDS
-from .core.actions import RunResult
+from .core.actions import RunResult, action_to_dict
 from .core.engine import SyncEngine
 from .core.model import SyncPair
 
 _LOGGER = logging.getLogger(__package__)
 
 FIRST_RUN_DELAY_SECONDS = 10.0
+WARNING_RATE_SECONDS = 600.0
 
 
 class SyncCoordinator:
@@ -37,6 +38,7 @@ class SyncCoordinator:
         self._unsubscribers: list[Callable[[], None]] = []
         self._debounce_cancels: dict[str, Callable[[], None]] = {}
         self._subscribers: list[Callable[[str], None]] = []
+        self._last_warning: dict[str, float] = {}
 
     async def async_start(self) -> None:
         """Schedule interval timers, state listeners, and the delayed first run."""
@@ -85,9 +87,25 @@ class SyncCoordinator:
             result.links,
             duration,
         )
+        if result.actions_planned:
+            _LOGGER.debug(
+                "pair=%s planned actions=%s",
+                pair_id,
+                [action_to_dict(action) for action in result.actions_planned],
+            )
+        if not result.ok:
+            self._warn_rate_limited(pair_id, result.error or "unknown error")
         for notify in self._subscribers:
             notify(pair_id)
         return result
+
+    def _warn_rate_limited(self, pair_id: str, error: str) -> None:
+        """Log a node error at most once per 10 minutes per pair."""
+        now = time.monotonic()
+        if now - self._last_warning.get(pair_id, 0.0) < WARNING_RATE_SECONDS:
+            return
+        self._last_warning[pair_id] = now
+        _LOGGER.warning("pair=%s error=%s", pair_id, error)
 
     @property
     def results(self) -> dict[str, RunResult]:

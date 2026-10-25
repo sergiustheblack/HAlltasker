@@ -56,6 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pairs = parse_pairs(conf)
     store = LinkStore(Store(hass, STORAGE_VERSION, STORAGE_KEY))
     await store.load()
+    hass.data[DOMAIN]["store"] = store
     registry = PluginRegistry()
     registry.register(HaTodoPlugin(hass))
     engine = SyncEngine(store, registry, clock=dt_util.now)
