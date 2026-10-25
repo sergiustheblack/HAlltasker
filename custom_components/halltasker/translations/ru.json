@@ -1,8 +1,24 @@
 {
-  "config": {
-    "step": {},
-    "abort": {
-      "already_configured": "HAlltasker уже настроен через configuration.yaml"
+  "services": {
+    "sync_now": {
+      "name": "Синхронизировать сейчас",
+      "description": "Немедленно выполнить один цикл синхронизации для пары или для всех пар.",
+      "fields": {
+        "pair_id": {
+          "name": "Пара",
+          "description": "Идентификатор пары из configuration.yaml; без него — все пары."
+        }
+      }
+    },
+    "dry_run": {
+      "name": "Пробный прогон",
+      "description": "Спланировать цикл без записи и вернуть список запланированных действий.",
+      "fields": {
+        "pair_id": {
+          "name": "Пара",
+          "description": "Идентификатор пары из configuration.yaml; без него — все пары."
+        }
+      }
     }
   }
 }
