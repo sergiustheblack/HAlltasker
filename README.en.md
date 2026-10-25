@@ -56,7 +56,7 @@ Work as ordinary `todo.*` entities. Shopping List has no due date and no descrip
 
 ## Configuration
 
-YAML only, in `configuration.yaml`. Reload with the `homeassistant.reload_config_entry` service or by restarting HA.
+YAML only, in `configuration.yaml`. In the current build, configuration changes are applied only by restarting HA (`homeassistant.reload_config_entry` does not re-read YAML; the `halltasker.reload` service is in progress).
 
 ```yaml
 halltasker:
@@ -82,7 +82,7 @@ halltasker:
       b_to_a: {}
 ```
 
-Any number of pairs; one entity may take part in several pairs.
+Any number of pairs. One entity in several pairs (for example Yandex ↔ iCloud and Yandex ↔ Google) is in progress (architecture v1.1, tasks T-22+) and is not supported in the current build.
 
 ## Services
 

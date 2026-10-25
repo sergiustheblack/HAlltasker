@@ -222,6 +222,88 @@ The README must be written in Russian (primary) in `README.md` and in English in
 
 ---
 
+## v1.1 tasks (2026-10-26)
+
+Source: SPEC v1.1 §9 and ARCHITECTURE v1.1 §14. Execute in order, one commit per task, same rules as above. If a task makes you deviate from the architecture text, record the deviation under a new heading `## v1.1` in `docs/IMPLEMENTATION_NOTES.md` in the same commit.
+
+## T-22. Store: per-pair link namespaces
+
+**Read:** ARCHITECTURE §2 (paragraph "Links are scoped to a pair"), §6 (first paragraph after the class), §8 (`engine_factory`), §9 (whole section), §10 (diagnostics line).
+**Files:** `core/link_store.py`, `core/engine.py`, `coordinator.py`, `__init__.py`, `diagnostics.py`, `tests/core/test_link_store.py`, `tests/core/test_engine_plan.py`, `tests/core/test_engine_apply.py`, `tests/test_coordinator.py`, `tests/test_diagnostics.py`.
+
+Exact changes:
+
+- `core/link_store.py`: new class `PairLinks` and the new `LinkStore` with exactly the methods of §9 (including `PairLinks.purge_tombstones` with the `present` argument; it is not called by the engine until T-27). Storage format schema 2. Rules of §9: same object per pair id, reset with a `WARNING` when the nodes of a pair id change, untouched namespaces of removed pairs, outdated format discarded with a `WARNING`. Remove the v1.0 per-link methods from `LinkStore`.
+- `core/engine.py`: the constructor takes `store: PairLinks`; `_live_links` counts the namespace. No other logic changes.
+- `coordinator.py`: the constructor takes `engine_factory: Callable[[SyncPair], SyncEngine]` instead of `engine`; `async_run_pair` builds the engine per cycle. Keep the per-pair locks as they are (T-23 replaces them).
+- `__init__.py`: `engine_factory = lambda pair: SyncEngine(store.for_pair(pair), registry, clock=dt_util.now)`.
+- `diagnostics.py`: `"store": store.to_dict()`.
+- Tests: `test_link_store.py` rewritten for the new API (namespace isolation: the same `(node, external_id)` in two pairs gives two independent links; `for_pair` identity; reset on re-pointed nodes with the warning in `caplog`; v1.0 data discarded with the warning; `to_dict` round-trips through `load`). Engine tests build the store as `LinkStore(FakeStorage()).for_pair(PAIR)`. Coordinator and diagnostics tests follow the new constructor and the schema 2 dump.
+
+**Done when:** the common check passes; `pytest -q tests/core/test_link_store.py` has at least 5 new tests.
+
+## T-23. Coordinator: one global lock
+
+**Read:** ARCHITECTURE §8 (the comment in `async_run_pair` and the paragraph "Why one global lock").
+**Files:** `coordinator.py`, `tests/test_coordinator.py`.
+
+Replace the per-pair locks with one `asyncio.Lock`. Test: two different pairs started at the same time run one after another (record the order of `run_pair` entry/exit in a fake engine and assert they do not interleave).
+
+## T-24. Schema: node and cycle validation
+
+**Read:** ARCHITECTURE §7 (the four validation rules), SPEC FR-12.3.
+**Files:** `schema.py`, `tests/test_schema.py` (new; validates `CONFIG_SCHEMA` directly, no `hass` fixture needed).
+
+Add to `CONFIG_SCHEMA`: `a != b`; no two pairs with the same node set; forest check by union-find in configuration order with the error text from §7. Tests: each rule rejected with `vol.Invalid`; a star of three pairs on one node is accepted; `A↔B, B↔C, A↔C` is rejected naming the third pair.
+
+## T-25. Engine: orphan matching before create
+
+**Read:** ARCHITECTURE §6.1 steps 3a and 5 ("Orphan matching"), SPEC FR-8.4.
+**Files:** `core/matching.py`, `core/engine.py`, `tests/core/test_matching.py`, `tests/core/test_engine_plan.py`, `tests/core/test_engine_apply.py`.
+
+`matching.find_match(task, candidates, caps_task, caps_candidates, tz) -> str | None` with the same key as `pair_up`. In the engine: `new_a`/`new_b` are computed before the loop over canonical tasks (step 3a) and are mutated by orphan matching and consumed by step 6. Tests: `find_match` with and without a match; plan test — a canonical task with a link on A only and an equal unlinked item on B plans `link` on B and no `create`; apply test for SPEC scenario A12 — make `FakePlugin.create` write the item but raise `NodeUnavailable("created item not found")`, run two cycles, assert exactly one item on each side and both linked.
+
+## T-26. Engine: locally accepted change
+
+**Read:** ARCHITECTURE §6.1 step 5 ("Locally accepted change") and step 8 (last bullet), SPEC FR-3.5.
+**Files:** `core/engine.py`, `tests/core/test_engine_apply.py`.
+
+Implement `context.accepted` and its application after the action loop (one save if non-empty). Test for SPEC scenario A11: `a_to_b.update = False`; change `title` in A → no action, store saved once; second cycle → no action and no save; then change `due` in B → `update` on A with `changed == {"due"}` only, and the title in B is unchanged.
+
+## T-27. Engine: tombstone purge in the cycle
+
+**Read:** ARCHITECTURE §6.1 step 8a, §9 (`purge_tombstones`), SPEC FR-6.5.
+**Files:** `core/engine.py`, `tests/core/test_link_store.py`, `tests/core/test_engine_apply.py`.
+
+Call `purge_tombstones` at the end of every successful non-dry cycle with `present` built from the two snapshots; save once if something was purged. Tests: store — a tombstone older than 30 days whose item is still present is kept, one whose item is absent is removed, a fresh one is kept; engine — after `delete: false` and a clock advanced by 31 days the Y item is still not re-created and its tombstone link still exists; the deleted X link is gone.
+
+## T-28. Engine: two pairs on a shared node
+
+**Read:** ARCHITECTURE §6 (first paragraph after the class), §6.2 (last paragraph), SPEC FR-12, scenario A10.
+**Files:** `tests/core/test_engine_multi_pair.py` (new), `core/engine.py` (only if a test exposes a defect; describe the fix in `docs/IMPLEMENTATION_NOTES.md`).
+
+One `LinkStore`, one `FakePlugin` with three nodes A, B, C, two engines built with `store.for_pair(pair_ab)` and `store.for_pair(pair_bc)`, cycles run alternately AB, BC, AB, BC. Tests: create in A reaches C after the second BC cycle; rename in C reaches A; delete in A with `delete: true` in both pairs removes the item in B and then in C; after all that, one more AB and BC cycle apply nothing and do not save; `delete: false` in AB and `delete: true` in BC: delete in A → B keeps the item, C keeps the item, nothing is re-created on later cycles.
+
+## T-29. Service `halltasker.reload`
+
+**Read:** ARCHITECTURE §7 ("Reload"), §10, SPEC FR-10.5.
+**Files:** `__init__.py`, `services.yaml`, `strings.json`, `translations/en.json`, `translations/ru.json`, `tests/test_services.py`.
+
+Register `reload` in `async_setup` with `async_register_admin_service` exactly as in §7; import `async_integration_yaml_config` by name into `__init__.py`. Tests: patch `custom_components.halltasker.async_integration_yaml_config` to return a config with a second pair → after the service call `coordinator.pairs` has two pairs and the old coordinator is stopped; patch it to return `None` → an error in `caplog`, pairs unchanged, the integration still loaded.
+
+## T-30. End-to-end tests with an in-memory todo platform
+
+**Read:** ARCHITECTURE §12 (the `tests/todo_platform.py` bullet and the two bullets after it), §4.
+**Files:** `tests/todo_platform.py` (new), `tests/test_e2e.py` (new).
+
+`tests/todo_platform.py`: `MemoryTodoEntity(TodoListEntity)` with a `supported_features` constructor argument and an `async def setup_memory_todo(hass, entity_id_suffix, features) -> MemoryTodoEntity` helper that registers the `test` integration and its `todo` platform through `mock_integration` / `mock_platform` / `MockConfigEntry` and waits until the entity state exists. `tests/test_e2e.py`: set up HAlltasker from YAML with a pair of two such entities and run cycles through `halltasker.sync_now`. Scenarios from SPEC §7: A1, A2, A3, A4 (`delete: true`), A7 with the B entity lacking `SET_DUE_DATETIME_ON_ITEM` (bit 32), A9. Assert through `todo.get_items` responses, not through plugin internals.
+
+## T-31. User documentation v1.1
+
+**Files:** `README.md` (Russian, see the exception in AGENTS.md), `README.en.md`.
+
+Update both files from `docs/` only: several pairs per node with the forest rule and a three-pair example sharing one Yandex node (SPEC FR-12, ARCHITECTURE §7); the `halltasker.reload` service in the services table and in the configuration section, replacing the "in progress" sentences; a note that to-do lists of the stock CalDAV integration require UI setup (RESEARCH §1); the Yandex app-password type is "Календарь" (RESEARCH §1). Keep the two files section-for-section equivalent.
+
 ## Stage 0 tasks (research)
 
 Performed by a human or by an agent with access to the accounts. See `docs/RESEARCH.md`. Results are recorded in `docs/RESEARCH.md` §4 and affect only the README and the acceptance scenarios of group C. The MVP code does not depend on them.
