@@ -214,7 +214,7 @@ Test: after a cycle the sensor `sensor.halltasker_<pair_id>` has the state `ok` 
 
 The README must be written in Russian (primary) in `README.md` and in English in `README.en.md`, with a language switch line at the top of each. Sections: installation through HACS; environment requirements for iCloud (a CalDAV account on the iPhone) and Yandex (the app password "Календарь CalDAV", connecting the stock HA CalDAV); the YAML example from ARCHITECTURE §7; services and sensors; limitations (Google Tasks without time, CalDAV once every 15 minutes, no RRULE). The README must not contain facts that are not in `docs/`: only what is in `docs/`.
 
-## T-21. CI
+## ✅ T-21. CI
 
 **Files:** `.github/workflows/ci.yml` (already exists, check it), edit `pyproject.toml` if needed.
 
