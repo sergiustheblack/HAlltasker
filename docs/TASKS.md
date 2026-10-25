@@ -208,7 +208,7 @@ Test: after a cycle the sensor `sensor.halltasker_<pair_id>` has the state `ok` 
 
 `async_get_config_entry_diagnostics` returns `{"pairs": [...], "store": {...}, "results": {...}}`. Rate-limit the `NodeUnavailable` warnings.
 
-## T-20. User documentation
+## ✅ T-20. User documentation
 
 **Files:** `README.md`, `README.en.md`.
 
