@@ -60,7 +60,7 @@ class SyncEngine:
             actions_planned=plan,
             actions_applied=applied,
             actions_failed=failed,
-            links=live_links,
+            links=_live_links(self._store, pair),
         )
 
     async def _plan(self, pair: SyncPair) -> tuple[list[Action], int, _CycleContext]:
@@ -113,10 +113,7 @@ class SyncEngine:
                 for action in plan
                 if action.kind not in ("delete", "soft_delete", "tombstone")
             ]
-        live_links = sum(
-            1 for node_links in links.values() for link in node_links.values() if not link.tombstone
-        )
-        return plan, live_links, context
+        return plan, _live_links(self._store, pair), context
 
     async def _execute(
         self, plan: list[Action], context: _CycleContext
@@ -614,3 +611,12 @@ class SyncEngine:
 
 def _is_tombstoned(link: Link | None) -> bool:
     return link is not None and link.tombstone
+
+
+def _live_links(store: LinkStore, pair: SyncPair) -> int:
+    return sum(
+        1
+        for node_links in store.links_for_pair(pair.a, pair.b).values()
+        for link in node_links.values()
+        if not link.tombstone
+    )
