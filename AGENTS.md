@@ -1,6 +1,6 @@
 # Rules for implementation agents
 
-> Language: English only. All agent-facing documentation in this repository is English. Do not write Russian in code, comments, commit messages, tests, or docs/QUESTIONS.md.
+> Language: English only. All agent-facing documentation in this repository is English. Do not write Russian in code, comments, commit messages, tests, or docs/QUESTIONS.md. The only exception is `README.md`, a human-facing document in Russian: a task that lists it says so explicitly.
 
 Every agent reads this file before working in the repository. The rules are short and mandatory.
 
