@@ -411,10 +411,7 @@ class SyncCoordinator:
     async def async_stop(self) -> None: ...
     async def async_run_pair(self, pair_id: str, *, dry_run: bool = False) -> RunResult:
         # ОДИН asyncio.Lock, общий для всех пар: в любой момент выполняется не более одного цикла
-        # engine = self._engine_factory(pair)
-        # async with asyncio.timeout(CYCLE_TIMEOUT_SECONDS): result = await engine.run_pair(pair, dry_run=dry_run)
-        # TimeoutError -> RunResult(ok=False, error="cycle timeout"); lock освобождается
-        # после цикла: цепной запуск (ниже)
+        # engine = self._engine_factory(pair); result = await engine.run_pair(pair, dry_run=dry_run)
     @property
     def results(self) -> dict[str, RunResult]:   # последний результат на пару, читает сенсор
     def subscribe(self, cb: Callable[[str], None]) -> Callable[[], None]:   # уведомление сенсоров
@@ -423,10 +420,6 @@ class SyncCoordinator:
 В `__init__.py`: `engine_factory = lambda pair: SyncEngine(link_store.for_pair(pair), registry, clock=dt_util.now)`.
 
 Почему один глобальный lock: пары с общим узлом читают и пишут одну и ту же сущность `todo.*`. Два одновременных цикла могли бы перемешать `create` одной пары с поиском uid для `create` другой (§4), а хранилище сохраняется целиком. Циклы короткие (несколько вызовов сервисов), поэтому их сериализация ничего заметного не стоит.
-
-**Таймаут цикла** (SPEC FR-9.4, Q-2). Зависший вызов сервиса `todo.*` держал бы глобальный lock вечно, поэтому вызов движка обёрнут в `asyncio.timeout(CYCLE_TIMEOUT_SECONDS)` (`const.py`, 120). Таймаут перехватывается в координаторе и превращается в `RunResult(ok=False, error="cycle timeout")` с пустыми списками действий; логируется как любая другая ошибка пары. Прерывать цикл безопасно: хранилище сохраняется после каждого применённого действия (§6.1 шаг 8), а `create`, отменённый между вызовом сервиса и поиском uid, оставляет сироту, которую шаг 5 линкует в следующем цикле.
-
-**Цепной запуск** (SPEC FR-12.6). `state_changed` не срабатывает при правке title или due (FR-9.2), поэтому изменение, записанное парой P1 в общий узел Y, иначе дошло бы до остальных пар Y только на их следующем интервале (по одному `interval` на переход). Поэтому после цикла с непустым `actions_applied` координатор собирает узлы применённых действий `create`/`update`/`complete`/`delete`/`soft_delete` и ставит в очередь каждую другую включённую пару, содержащую один из этих узлов, через тот же debounce 2 с, что и для `state_changed`. Цепочка заканчивается сама: пара, узлы которой не изменились, ничего не применяет. Dry run цепочку не запускает.
 
 Факты HA (2026.9): функция, передаваемая в `async_call_later` или `async_track_time_interval`, должна сама быть декорирована `@callback` (декорировать фабрику, которая её возвращает, недостаточно); иначе она выполняется в executor, и `hass.async_create_task` бросает `RuntimeError` о потокобезопасности.
 
@@ -488,7 +481,7 @@ class LinkStore:
 
 - `sensor.py`: по одному `SensorEntity` на пару, `unique_id = f"halltasker_{pair.id}"`, `name = f"HAlltasker {pair.id}"`, состояние из `RunResult`: `error` если `not ok`, `dry_run` если режим dry_run, `disabled` если `not pair.enabled`, иначе `ok`. Атрибуты по FR-10.3. Обновление по `coordinator.subscribe`.
 - Сервисы в `__init__.py`: `sync_now` (`pair_id` optional) и `dry_run` (`pair_id` optional, `SupportsResponse.ONLY`, возвращает `{"pairs": {pair_id: [actions]}}`), оба регистрируются в `async_setup_entry`; `reload` (без полей), регистрируется в `async_setup` через `async_register_admin_service` (§7). Без `pair_id` `sync_now` выполняет пары одну за другой в порядке конфигурации. Описания в `services.yaml`.
-- `diagnostics.py`: `{"pairs": [...], "store": async_redact_data(link_store.to_dict(), {"title", "description"}), "results": {...}}`, где `async_redact_data` из `homeassistant.components.diagnostics` (SPEC FR-10.4, Q-3): в снапшотах остаются `hash`, `status` и `due`, тексты задач заменяются на `**REDACTED**`. В `results` есть действия с задачами; их прогнать через тот же вызов.
+- `diagnostics.py`: `{"pairs": [...], "store": link_store.to_dict(), "results": {...}}`.
 
 ## 11. Логирование
 
@@ -535,5 +528,4 @@ class LinkStore:
 - Локально принятые изменения для операций, запрещённых правилом (§6.1 шаг 5, SPEC FR-3.5).
 - Сервис `halltasker.reload`, потому что `reload_config_entry` не перечитывает YAML (§7, SPEC FR-10.5).
 - Сквозные тесты с in-memory платформой `todo` (§12).
-- По ревью v1.1 исполнителем (Q-2, Q-3): таймаут цикла под глобальным lock и цепной запуск пар записанного узла (§8); скрытие текстов задач в диагностике (§10).
 - Исправленные факты: статус probatio/voluptuous в HA 2026.9 (Q-1), `TodoItem.completed` (§4, §7).
