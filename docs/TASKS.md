@@ -237,17 +237,17 @@ Exact changes:
 - `core/engine.py`: the constructor takes `store: PairLinks`; `_live_links` counts the namespace. No other logic changes.
 - `coordinator.py`: the constructor takes `engine_factory: Callable[[SyncPair], SyncEngine]` instead of `engine`; `async_run_pair` builds the engine per cycle. Keep the per-pair locks as they are (T-23 replaces them).
 - `__init__.py`: `engine_factory = lambda pair: SyncEngine(store.for_pair(pair), registry, clock=dt_util.now)`.
-- `diagnostics.py`: `"store": store.to_dict()`.
+- `diagnostics.py`: `"store": store.to_dict()` and `"results"`, both passed through `async_redact_data(..., {"title", "description"})` (§10).
 - Tests: `test_link_store.py` rewritten for the new API (namespace isolation: the same `(node, external_id)` in two pairs gives two independent links; `for_pair` identity; reset on re-pointed nodes with the warning in `caplog`; v1.0 data discarded with the warning; `to_dict` round-trips through `load`). Engine tests build the store as `LinkStore(FakeStorage()).for_pair(PAIR)`. Coordinator and diagnostics tests follow the new constructor and the schema 2 dump.
 
 **Done when:** the common check passes; `pytest -q tests/core/test_link_store.py` has at least 5 new tests.
 
 ## T-23. Coordinator: one global lock
 
-**Read:** ARCHITECTURE §8 (the comment in `async_run_pair` and the paragraph "Why one global lock").
-**Files:** `coordinator.py`, `tests/test_coordinator.py`.
+**Read:** ARCHITECTURE §8 (the comment in `async_run_pair`, "Why one global lock", "Cycle timeout", "Chained run"), SPEC FR-9.4, FR-12.6.
+**Files:** `coordinator.py`, `const.py`, `tests/test_coordinator.py`.
 
-Replace the per-pair locks with one `asyncio.Lock`. Test: two different pairs started at the same time run one after another (record the order of `run_pair` entry/exit in a fake engine and assert they do not interleave).
+Replace the per-pair locks with one `asyncio.Lock`; wrap the engine call in `asyncio.timeout(CYCLE_TIMEOUT_SECONDS)` (`const.py`, 120); add the chained run. Tests: two different pairs started at the same time run one after another (record the order of `run_pair` entry/exit in a fake engine and assert they do not interleave); a fake engine that never returns → after the timeout the result is `ok=False, error="cycle timeout"` and another pair can run; a fake engine whose result has an applied `update` on node B in pair `ab` → pair `bc` runs once after the debounce, pair `ab` is not re-run, and a dry run of `ab` triggers nothing.
 
 ## T-24. Schema: node and cycle validation
 
@@ -302,7 +302,7 @@ Register `reload` in `async_setup` with `async_register_admin_service` exactly a
 
 **Files:** `README.md` (Russian, see the exception in AGENTS.md), `README.en.md`.
 
-Update both files from `docs/` only: several pairs per node with the forest rule and a three-pair example sharing one Yandex node (SPEC FR-12, ARCHITECTURE §7); the `halltasker.reload` service in the services table and in the configuration section, replacing the "in progress" sentences; a note that to-do lists of the stock CalDAV integration require UI setup (RESEARCH §1); the Yandex app-password type is "Календарь" (RESEARCH §1). Keep the two files section-for-section equivalent.
+Update both files from `docs/` only: several pairs per node with the forest rule and a three-pair example sharing one Yandex node (SPEC FR-12, ARCHITECTURE §7); the `halltasker.reload` service in the services table and in the configuration section, replacing the "in progress" sentences; a note that to-do lists of the stock CalDAV integration require UI setup (RESEARCH §1); the Yandex app-password type is "Календарь" (RESEARCH §1); one sentence that a change crosses a shared node within seconds thanks to chained runs (SPEC FR-12.6), while external integrations such as CalDAV still add their own refresh delay; the cycle timeout (FR-9.4) in the limitations section. Keep the two files section-for-section equivalent.
 
 ## Stage 0 tasks (research)
 
