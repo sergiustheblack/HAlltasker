@@ -8,6 +8,8 @@ Every agent reads this file before working in the repository. The rules are shor
 
 HAlltasker is a custom integration for Home Assistant on Python 3.14. It synchronizes tasks between `todo.*` entities. Requirements: `docs/SPEC.md`. Design: `docs/ARCHITECTURE.md`. Task list: `docs/TASKS.md`.
 
+The work is also tracked in Yandex Tracker. After finishing a task, mirror it per `docs/TRACKER.md`.
+
 ## Order of work on a task
 
 1. Open `docs/TASKS.md` and take the first unfinished task. Tasks are executed strictly in order.
