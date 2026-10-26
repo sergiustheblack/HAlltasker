@@ -226,7 +226,7 @@ The README must be written in Russian (primary) in `README.md` and in English in
 
 Source: SPEC v1.1 §9 and ARCHITECTURE v1.1 §14. Execute in order, one commit per task, same rules as above. If a task makes you deviate from the architecture text, record the deviation under a new heading `## v1.1` in `docs/IMPLEMENTATION_NOTES.md` in the same commit.
 
-## T-22. Store: per-pair link namespaces
+## ✅ T-22. Store: per-pair link namespaces
 
 **Read:** ARCHITECTURE §2 (paragraph "Links are scoped to a pair"), §6 (first paragraph after the class), §8 (`engine_factory`), §9 (whole section), §10 (diagnostics line).
 **Files:** `core/link_store.py`, `core/engine.py`, `coordinator.py`, `__init__.py`, `diagnostics.py`, `tests/core/test_link_store.py`, `tests/core/test_engine_plan.py`, `tests/core/test_engine_apply.py`, `tests/test_coordinator.py`, `tests/test_diagnostics.py`.

@@ -1,12 +1,18 @@
-"""Persistent link index on top of a duck-typed storage object."""
+"""Persistent link index: one namespace per pair on top of a storage object."""
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 import datetime as dt
+import logging
 from typing import Any, Protocol
 import uuid
 
-from .model import Link
+from .model import Link, SyncPair
+
+_LOGGER = logging.getLogger(__package__)
+
+SCHEMA_VERSION = 2
 
 
 class StorageLike(Protocol):
@@ -17,34 +23,26 @@ class StorageLike(Protocol):
     async def async_save(self, data: dict[str, Any]) -> None: ...
 
 
-class LinkStore:
-    """In-memory link index; every save writes the full state to storage."""
+class PairLinks:
+    """One pair's namespace: links and canonical ids invisible to other pairs."""
 
-    def __init__(self, storage: StorageLike) -> None:
-        self._storage = storage
+    def __init__(
+        self,
+        pair_id: str,
+        nodes: tuple[str, str],
+        store: LinkStore,
+        initialized: bool = False,
+    ) -> None:
+        self.pair_id = pair_id
+        self.nodes = nodes
+        self._store = store
+        self._initialized = initialized
         self._by_canonical: dict[str, dict[str, Link]] = {}
         self._by_external: dict[tuple[str, str], Link] = {}
-        self._initialized_pairs: set[str] = set()
-
-    async def load(self) -> None:
-        data = await self._storage.async_load()
-        self._by_canonical = {}
-        self._by_external = {}
-        self._initialized_pairs = set()
-        if not data:
-            return
-        for link_data in data.get("links", []):
-            self.upsert(Link.from_dict(link_data))
-        self._initialized_pairs = set(data.get("initialized_pairs", []))
 
     async def save(self) -> None:
-        links = [link for node_links in self._by_canonical.values() for link in node_links.values()]
-        await self._storage.async_save(
-            {
-                "links": [link.to_dict() for link in links],
-                "initialized_pairs": sorted(self._initialized_pairs),
-            }
-        )
+        """Persist the whole store, not only this namespace."""
+        await self._store.save()
 
     def get(self, node: str, external_id: str) -> Link | None:
         return self._by_external.get((node, external_id))
@@ -72,22 +70,38 @@ class LinkStore:
         return uuid.uuid4().hex
 
     def pair_initialized(self, pair_id: str) -> bool:
-        return pair_id in self._initialized_pairs
+        self._require_same_pair(pair_id)
+        return self._initialized
 
     def mark_pair_initialized(self, pair_id: str) -> None:
-        self._initialized_pairs.add(pair_id)
+        self._require_same_pair(pair_id)
+        self._initialized = True
 
-    def purge_tombstones(self, *, older_than_days: int = 30, now: dt.datetime) -> int:
+    def purge_tombstones(
+        self,
+        *,
+        older_than_days: int = 30,
+        now: dt.datetime,
+        present: Mapping[str, Collection[str]],
+    ) -> int:
+        """Drop tombstones older than the TTL whose items are gone from the node."""
         cutoff = now - dt.timedelta(days=older_than_days)
         removed = 0
         for canonical_id, node_links in list(self._by_canonical.items()):
             for node, link in list(node_links.items()):
                 if not link.tombstone or not link.tombstone_at:
                     continue
-                if dt.datetime.fromisoformat(link.tombstone_at) < cutoff:
-                    self._remove(canonical_id, node, link)
-                    removed += 1
+                if dt.datetime.fromisoformat(link.tombstone_at) >= cutoff:
+                    continue
+                if link.external_id in present.get(link.node, ()):
+                    continue
+                self._remove(canonical_id, node, link)
+                removed += 1
         return removed
+
+    def _require_same_pair(self, pair_id: str) -> None:
+        if pair_id != self.pair_id:
+            raise ValueError(f"namespace of pair {self.pair_id!r} got a call for pair {pair_id!r}")
 
     def _remove(self, canonical_id: str, node: str, link: Link) -> None:
         self._by_external.pop((node, link.external_id), None)
@@ -96,3 +110,68 @@ class LinkStore:
             del node_links[node]
             if not node_links:
                 del self._by_canonical[canonical_id]
+
+    def _links(self) -> list[Link]:
+        return [link for node_links in self._by_canonical.values() for link in node_links.values()]
+
+
+class LinkStore:
+    """Owns the namespaces of all pairs and serializes them as one storage blob."""
+
+    def __init__(self, storage: StorageLike) -> None:
+        self._storage = storage
+        self._pairs: dict[str, PairLinks] = {}
+
+    async def load(self) -> None:
+        data = await self._storage.async_load()
+        self._pairs = {}
+        if not data:
+            return
+        if data.get("schema") != SCHEMA_VERSION:
+            _LOGGER.warning("halltasker: link storage format is outdated and was discarded")
+            return
+        for pair_id, payload in data.get("pairs", {}).items():
+            namespace = PairLinks(
+                pair_id,
+                tuple(payload["nodes"]),
+                self,
+                initialized=bool(payload.get("initialized")),
+            )
+            for link_data in payload.get("links", []):
+                namespace.upsert(Link.from_dict(link_data))
+            self._pairs[pair_id] = namespace
+
+    async def save(self) -> None:
+        await self._storage.async_save(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": SCHEMA_VERSION,
+            "pairs": {
+                pair_id: {
+                    "nodes": list(namespace.nodes),
+                    "initialized": namespace._initialized,
+                    "links": [link.to_dict() for link in namespace._links()],
+                }
+                for pair_id, namespace in sorted(self._pairs.items())
+            },
+        }
+
+    def for_pair(self, pair: SyncPair) -> PairLinks:
+        """Return the namespace of the pair, resetting it if its nodes changed."""
+        existing = self._pairs.get(pair.id)
+        if existing is not None:
+            if set(existing.nodes) == {pair.a, pair.b}:
+                return existing
+            _LOGGER.warning(
+                "halltasker: pair %s now connects %s and %s; its links were reset",
+                pair.id,
+                pair.a,
+                pair.b,
+            )
+        namespace = PairLinks(pair.id, (pair.a, pair.b), self)
+        self._pairs[pair.id] = namespace
+        return namespace
+
+    def pair_ids(self) -> list[str]:
+        return sorted(self._pairs)

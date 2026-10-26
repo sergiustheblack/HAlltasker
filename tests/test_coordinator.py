@@ -30,7 +30,9 @@ class CountingEngine(SyncEngine):
     """Counts cycles and can simulate overlap."""
 
     def __init__(self, delay: float = 0.0) -> None:
-        super().__init__(LinkStore(FakeStorage()), PluginRegistry(), clock=lambda: NOW)
+        super().__init__(
+            LinkStore(FakeStorage()).for_pair(PAIR), PluginRegistry(), clock=lambda: NOW
+        )
         self.runs = 0
         self.active = False
         self.overlapped = False
@@ -49,7 +51,7 @@ class CountingEngine(SyncEngine):
 
 
 def _coordinator(hass: HomeAssistant, engine: SyncEngine) -> SyncCoordinator:
-    return SyncCoordinator(hass, [PAIR], engine)
+    return SyncCoordinator(hass, [PAIR], lambda pair: engine)
 
 
 async def test_cycle_runs_on_interval(hass: HomeAssistant) -> None:

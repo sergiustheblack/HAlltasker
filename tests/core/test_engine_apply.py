@@ -38,7 +38,7 @@ class FailingCreatePlugin(FakePlugin):
 
 def _engine(plugin: FakePlugin | None = None):
     storage = FakeStorage()
-    store = LinkStore(storage)
+    store = LinkStore(storage).for_pair(PAIR)
     plugin = plugin if plugin is not None else FakePlugin()
     plugin.caps[NODE_A] = FULL_CAPS
     plugin.caps[NODE_B] = FULL_CAPS

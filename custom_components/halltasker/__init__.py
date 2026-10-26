@@ -19,6 +19,7 @@ from .coordinator import SyncCoordinator
 from .core.actions import action_to_dict
 from .core.engine import SyncEngine
 from .core.link_store import LinkStore
+from .core.model import SyncPair
 from .plugins.ha_todo import HaTodoPlugin
 from .plugins.registry import PluginRegistry
 from .schema import CONFIG_SCHEMA, parse_pairs
@@ -59,8 +60,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["store"] = store
     registry = PluginRegistry()
     registry.register(HaTodoPlugin(hass))
-    engine = SyncEngine(store, registry, clock=dt_util.now)
-    coordinator = SyncCoordinator(hass, pairs, engine)
+
+    def engine_factory(pair: SyncPair) -> SyncEngine:
+        return SyncEngine(store.for_pair(pair), registry, clock=dt_util.now)
+
+    coordinator = SyncCoordinator(hass, pairs, engine_factory)
     hass.data[DOMAIN]["coordinator"] = coordinator
     await coordinator.async_start()
     _async_register_services(hass)
