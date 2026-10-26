@@ -249,7 +249,7 @@ Exact changes:
 
 Replace the per-pair locks with one `asyncio.Lock`. Test: two different pairs started at the same time run one after another (record the order of `run_pair` entry/exit in a fake engine and assert they do not interleave).
 
-## T-24. Schema: node and cycle validation
+## ✅ T-24. Schema: node and cycle validation
 
 **Read:** ARCHITECTURE §7 (the four validation rules), SPEC FR-12.3.
 **Files:** `schema.py`, `tests/test_schema.py` (new; validates `CONFIG_SCHEMA` directly, no `hass` fixture needed).
