@@ -263,7 +263,7 @@ Add to `CONFIG_SCHEMA`: `a != b`; no two pairs with the same node set; forest ch
 
 `matching.find_match(task, candidates, caps_task, caps_candidates, tz) -> str | None` with the same key as `pair_up`. In the engine: `new_a`/`new_b` are computed before the loop over canonical tasks (step 3a) and are mutated by orphan matching and consumed by step 6. Tests: `find_match` with and without a match; plan test — a canonical task with a link on A only and an equal unlinked item on B plans `link` on B and no `create`; apply test for SPEC scenario A12 — make `FakePlugin.create` write the item but raise `NodeUnavailable("created item not found")`, run two cycles, assert exactly one item on each side and both linked.
 
-## T-26. Engine: locally accepted change
+## ✅ T-26. Engine: locally accepted change
 
 **Read:** ARCHITECTURE §6.1 step 5 ("Locally accepted change") and step 8 (last bullet), SPEC FR-3.5.
 **Files:** `core/engine.py`, `tests/core/test_engine_apply.py`.

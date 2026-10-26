@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from custom_components.halltasker.core.model import (
@@ -78,7 +79,12 @@ class FakePlugin(Plugin):
         task: CanonicalTask,
         changed: frozenset[str],
     ) -> None:
-        self.items[node][external_id] = task
+        current = self.items[node][external_id]
+        merged = replace(
+            current,
+            **{field: getattr(task, field) for field in changed},
+        )
+        self.items[node][external_id] = merged
         self.calls.append(("update", node, external_id, task, changed))
 
     async def delete(self, node: str, external_id: str) -> None:

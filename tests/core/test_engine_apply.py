@@ -87,9 +87,14 @@ async def test_a2_rename_in_b_changes_in_a_and_repeat_cycle_writes_nothing() -> 
     assert _only(plugin.items[NODE_A]).title == "renamed"
 
     saves_before = storage.saves
-    repeated = await engine.run_pair(PAIR, dry_run=False)
-    assert repeated.actions_applied == []
-    assert storage.saves == saves_before
+    first_repeat = await engine.run_pair(PAIR, dry_run=False)
+    assert first_repeat.actions_applied == []
+    assert storage.saves == saves_before + 1  # one echo update is persisted once
+
+    saves_settled = storage.saves
+    second_repeat = await engine.run_pair(PAIR, dry_run=False)
+    assert second_repeat.actions_applied == []
+    assert storage.saves == saves_settled  # a converged cycle writes nothing
 
 
 async def test_a3_complete_and_uncomplete_propagate() -> None:
@@ -186,9 +191,14 @@ async def test_a7_due_datetime_downgrades_to_date_without_echo_changes() -> None
     assert _only(plugin.items[NODE_B]).due == dt.date(2026, 10, 5)
 
     saves_before = storage.saves
-    repeated = await engine.run_pair(PAIR, dry_run=False)
-    assert repeated.actions_applied == []
-    assert storage.saves == saves_before
+    first_repeat = await engine.run_pair(PAIR, dry_run=False)
+    assert first_repeat.actions_applied == []
+    assert storage.saves == saves_before + 1  # one echo update is persisted once
+
+    saves_settled = storage.saves
+    second_repeat = await engine.run_pair(PAIR, dry_run=False)
+    assert second_repeat.actions_applied == []
+    assert storage.saves == saves_settled  # a converged cycle writes nothing
 
 
 async def test_a8_dry_run_lists_actions_and_writes_nothing() -> None:
@@ -271,3 +281,56 @@ async def test_a12_orphan_from_failed_uid_lookup_is_linked_not_duplicated() -> N
 
     third = await engine.run_pair(PAIR, dry_run=False)
     assert third.actions_applied == []
+
+
+async def test_a11_blocked_change_is_accepted_locally_and_does_not_leak() -> None:
+    pair = SyncPair(id="p", a=NODE_A, b=NODE_B, a_to_b=DirectionRule(update=False))
+    storage = FakeStorage()
+    store = LinkStore(storage).for_pair(pair)
+    plugin = FakePlugin()
+    plugin.caps[NODE_A] = FULL_CAPS
+    plugin.caps[NODE_B] = FULL_CAPS
+    registry = PluginRegistry()
+    registry.register(plugin)
+    engine = SyncEngine(store, registry, clock=lambda: NOW)
+
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    canonical_id = store.new_canonical_id()
+    snapshot = Snapshot.of(TASK)
+    for node, ext in ((NODE_A, ext_a), (NODE_B, ext_b)):
+        store.upsert(
+            Link(
+                canonical_id=canonical_id,
+                node=node,
+                external_id=ext,
+                last_observed=snapshot,
+                last_written=snapshot,
+                last_synced=snapshot,
+            )
+        )
+    store.mark_pair_initialized(pair.id)
+
+    plugin.items[NODE_A][ext_a] = CanonicalTask(
+        title="renamed", description="d", due=dt.date(2026, 10, 5)
+    )
+    saves_before = storage.saves
+    blocked = await engine.run_pair(pair, dry_run=False)
+    assert blocked.ok is True
+    assert blocked.actions_applied == []
+    assert storage.saves == saves_before + 1  # the accepted change is saved once
+
+    saves_settled = storage.saves
+    repeated = await engine.run_pair(pair, dry_run=False)
+    assert repeated.actions_applied == []
+    assert storage.saves == saves_settled  # not reported again
+
+    plugin.items[NODE_B][ext_b] = CanonicalTask(
+        title="x", description="d", due=dt.date(2026, 10, 7)
+    )
+    merged = await engine.run_pair(pair, dry_run=False)
+    assert [(a.kind, a.node) for a in merged.actions_applied] == [("update", NODE_A)]
+    assert merged.actions_applied[0].changed == frozenset({"due"})
+    assert _only(plugin.items[NODE_A]).title == "renamed"
+    assert _only(plugin.items[NODE_A]).due == dt.date(2026, 10, 7)
+    assert _only(plugin.items[NODE_B]).title == "x"

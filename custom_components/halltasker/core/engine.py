@@ -26,6 +26,7 @@ class _CycleContext:
     caps: dict[str, Capabilities]
     tz: dt.tzinfo
     echo_updates: list[tuple[Link, Snapshot]] = field(default_factory=list)
+    accepted: list[tuple[Link, Snapshot]] = field(default_factory=list)
     targeted: set[tuple[str, str]] = field(default_factory=set)
 
 
@@ -52,7 +53,7 @@ class SyncEngine:
         applied, failed = await self._execute(plan, context)
         if not was_initialized:
             self._store.mark_pair_initialized(pair.id)
-        if applied or not was_initialized:
+        if applied or not was_initialized or context.echo_updates or context.accepted:
             await self._store.save()
         return RunResult(
             ok=True,
@@ -112,6 +113,7 @@ class SyncEngine:
                     new_b,
                     caps_a,
                     caps_b,
+                    context,
                 )
             )
 
@@ -146,6 +148,9 @@ class SyncEngine:
             await self._store.save()
         for link, snapshot in context.echo_updates:
             link.last_observed = snapshot
+        for link, snapshot in context.accepted:
+            link.last_observed = snapshot
+            link.last_synced = snapshot
         return applied, failed
 
     async def _apply(self, action: Action, context: _CycleContext, now: str) -> None:
@@ -273,6 +278,7 @@ class SyncEngine:
         new_b: dict[str, CanonicalTask],
         caps_a: Capabilities,
         caps_b: Capabilities,
+        context: _CycleContext,
     ) -> list[Action]:
         if state_a.kind == "deleted" and state_b.kind == "deleted":
             return self._tombstone_both(pair, canonical_id, link_a, link_b, "deleted on both")
@@ -291,7 +297,7 @@ class SyncEngine:
         if state_a.kind == "changed" and state_b.kind == "changed":
             return self._plan_conflict(pair, canonical_id, link_a, state_a, link_b, state_b, tz)
         if state_a.kind == "changed":
-            return self._plan_update(
+            actions = self._plan_update(
                 pair.a_to_b,
                 state_a.current,
                 state_a.changed_fields,
@@ -301,8 +307,10 @@ class SyncEngine:
                 tz,
                 "changed on A",
             )
+            _accept_locally(actions, link_a, state_a, state_b, context)
+            return actions
         if state_b.kind == "changed":
-            return self._plan_update(
+            actions = self._plan_update(
                 pair.b_to_a,
                 state_b.current,
                 state_b.changed_fields,
@@ -312,6 +320,8 @@ class SyncEngine:
                 tz,
                 "changed on B",
             )
+            _accept_locally(actions, link_b, state_b, state_a, context)
+            return actions
         return []
 
     def _plan_update(
@@ -628,6 +638,21 @@ class SyncEngine:
                 )
             )
         return actions
+
+
+def _accept_locally(
+    actions: list[Action],
+    source_link: Link | None,
+    source_state: SideState,
+    other_state: SideState,
+    context: _CycleContext,
+) -> None:
+    """FR-3.5: a change the rule does not propagate becomes the synced state."""
+    if actions or source_link is None or source_state.current is None:
+        return
+    if other_state.kind not in ("unchanged", "echo"):
+        return
+    context.accepted.append((source_link, Snapshot.of(source_state.current)))
 
 
 def _is_tombstoned(link: Link | None) -> bool:
