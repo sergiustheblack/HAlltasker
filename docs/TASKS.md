@@ -270,7 +270,7 @@ Add to `CONFIG_SCHEMA`: `a != b`; no two pairs with the same node set; forest ch
 
 Implement `context.accepted` and its application after the action loop (one save if non-empty). Test for SPEC scenario A11: `a_to_b.update = False`; change `title` in A → no action, store saved once; second cycle → no action and no save; then change `due` in B → `update` on A with `changed == {"due"}` only, and the title in B is unchanged.
 
-## T-27. Engine: tombstone purge in the cycle
+## ✅ T-27. Engine: tombstone purge in the cycle
 
 **Read:** ARCHITECTURE §6.1 step 8a, §9 (`purge_tombstones`), SPEC FR-6.5.
 **Files:** `core/engine.py`, `tests/core/test_link_store.py`, `tests/core/test_engine_apply.py`.
