@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 import logging
 import time
@@ -15,7 +15,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 
-from .const import EVENT_DEBOUNCE_SECONDS
+from .const import CYCLE_TIMEOUT_SECONDS, EVENT_DEBOUNCE_SECONDS
 from .core.actions import RunResult, action_to_dict
 from .core.engine import SyncEngine
 from .core.model import SyncPair
@@ -24,6 +24,8 @@ _LOGGER = logging.getLogger(__package__)
 
 FIRST_RUN_DELAY_SECONDS = 10.0
 WARNING_RATE_SECONDS = 600.0
+
+_WRITE_KINDS = frozenset({"create", "update", "complete", "delete", "soft_delete"})
 
 
 class SyncCoordinator:
@@ -39,7 +41,7 @@ class SyncCoordinator:
         self._pairs = {pair.id: pair for pair in pairs}
         self._engine_factory = engine_factory
         self._results: dict[str, RunResult] = {}
-        self._locks = {pair.id: asyncio.Lock() for pair in pairs}
+        self._lock = asyncio.Lock()
         self._unsubscribers: list[Callable[[], None]] = []
         self._debounce_cancels: dict[str, Callable[[], None]] = {}
         self._subscribers: list[Callable[[str], None]] = []
@@ -76,11 +78,15 @@ class SyncCoordinator:
         self._unsubscribers.clear()
 
     async def async_run_pair(self, pair_id: str, *, dry_run: bool = False) -> RunResult:
-        """Run one cycle; concurrent runs of the same pair are serialized."""
-        async with self._locks[pair_id]:
+        """Run one cycle; at most one cycle of any pair runs at a time."""
+        async with self._lock:
             started = time.monotonic()
             engine = self._engine_factory(self._pairs[pair_id])
-            result = await engine.run_pair(self._pairs[pair_id], dry_run=dry_run)
+            try:
+                async with asyncio.timeout(CYCLE_TIMEOUT_SECONDS):
+                    result = await engine.run_pair(self._pairs[pair_id], dry_run=dry_run)
+            except TimeoutError:
+                result = RunResult(ok=False, error="cycle timeout")
             duration = time.monotonic() - started
         self._results[pair_id] = result
         _LOGGER.info(
@@ -101,6 +107,11 @@ class SyncCoordinator:
             )
         if not result.ok:
             self._warn_rate_limited(pair_id, result.error or "unknown error")
+        if not dry_run and result.actions_applied:
+            written_nodes = {
+                action.node for action in result.actions_applied if action.kind in _WRITE_KINDS
+            }
+            self._schedule_pairs(written_nodes, exclude_pair_id=pair_id)
         for notify in self._subscribers:
             notify(pair_id)
         return result
@@ -148,20 +159,25 @@ class SyncCoordinator:
 
     @callback
     def _on_state_changed(self, event: Event[EventStateChangedData]) -> None:
-        entity_id = event.data["entity_id"]
-        pair_ids = [
-            pair.id
-            for pair in self._pairs.values()
-            if pair.enabled and entity_id in (pair.a, pair.b)
-        ]
-        if not pair_ids:
-            return
-        cancel = self._debounce_cancels.pop(entity_id, None)
-        if cancel is not None:
-            cancel()
-        self._debounce_cancels[entity_id] = async_call_later(
-            self._hass, EVENT_DEBOUNCE_SECONDS, self._debounced_run(tuple(pair_ids))
-        )
+        self._schedule_pairs([event.data["entity_id"]])
+
+    @callback
+    def _schedule_pairs(self, nodes: Iterable[str], exclude_pair_id: str | None = None) -> None:
+        """Debounce-run every enabled pair of these nodes, except the source pair."""
+        for node in nodes:
+            pair_ids = tuple(
+                pair.id
+                for pair in self._pairs.values()
+                if pair.enabled and node in (pair.a, pair.b) and pair.id != exclude_pair_id
+            )
+            if not pair_ids:
+                continue
+            cancel = self._debounce_cancels.pop(node, None)
+            if cancel is not None:
+                cancel()
+            self._debounce_cancels[node] = async_call_later(
+                self._hass, EVENT_DEBOUNCE_SECONDS, self._debounced_run(pair_ids)
+            )
 
     @callback
     def _debounced_run(self, pair_ids: tuple[str, ...]) -> Callable[[datetime], None]:

@@ -242,7 +242,7 @@ Exact changes:
 
 **Done when:** the common check passes; `pytest -q tests/core/test_link_store.py` has at least 5 new tests.
 
-## T-23. Coordinator: one global lock
+## ✅ T-23. Coordinator: one global lock
 
 **Read:** ARCHITECTURE §8 (the comment in `async_run_pair` and the paragraph "Why one global lock").
 **Files:** `coordinator.py`, `tests/test_coordinator.py`.
