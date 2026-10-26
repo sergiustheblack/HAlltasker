@@ -17,4 +17,4 @@ After completing a task `T-NN` (checks passed, commit `T-NN: …` made, TASKS.md
 
 Known defects found during a task go into `docs/QUESTIONS.md` as usual and, if they block the task, also as a comment on its issue.
 
-State as of 2026-10-26: IT-10…IT-31 (T-01…T-22) closed; IT-32…IT-40 (T-23…T-31) open; milestone IT-9 has a project-history comment. Issue IT-8 is a probe awaiting manual deletion in the UI (issues cannot be deleted via the API).
+State as of 2026-10-26: IT-10…IT-34 (T-01…T-25) closed; IT-35…IT-40 (T-26…T-31) open; milestone IT-9 has a project-history comment. Issue IT-8 is a probe awaiting manual deletion in the UI (issues cannot be deleted via the API).
