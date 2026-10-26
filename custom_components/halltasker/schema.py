@@ -76,10 +76,41 @@ def _unique_ids(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return pairs
 
 
+def _validate_graph(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reject self-pairs, duplicate edges, and cycles: the graph must be a forest."""
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        root = node
+        while parent.get(root, root) != root:
+            root = parent[root]
+        while parent.get(node, node) != node:
+            parent[node], node = root, parent[node]
+        return root
+
+    seen_edges: set[frozenset[str]] = set()
+    for pair in pairs:
+        a, b, pair_id = pair["a"], pair["b"], pair["id"]
+        if a == b:
+            raise vol.Invalid(f"pair '{pair_id}' connects the node {a} to itself")
+        edge = frozenset((a, b))
+        if edge in seen_edges:
+            raise vol.Invalid(f"pairs connect the same two nodes twice at pair '{pair_id}'")
+        seen_edges.add(edge)
+        if find(a) == find(b):
+            raise vol.Invalid(f"pairs form a cycle at pair '{pair_id}'")
+        parent[find(a)] = find(b)
+    return pairs
+
+
 CONFIG_SCHEMA = vol.Schema(
     {
         DOMAIN: vol.Schema(
-            {vol.Required("pairs"): vol.All(cv.ensure_list, [_PAIR_SCHEMA], _unique_ids)}
+            {
+                vol.Required("pairs"): vol.All(
+                    cv.ensure_list, [_PAIR_SCHEMA], _unique_ids, _validate_graph
+                )
+            }
         )
     },
     extra=vol.ALLOW_EXTRA,

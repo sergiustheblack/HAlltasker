@@ -249,7 +249,7 @@ Exact changes:
 
 Replace the per-pair locks with one `asyncio.Lock`; wrap the engine call in `asyncio.timeout(CYCLE_TIMEOUT_SECONDS)` (`const.py`, 120); add the chained run. Tests: two different pairs started at the same time run one after another (record the order of `run_pair` entry/exit in a fake engine and assert they do not interleave); a fake engine that never returns → after the timeout the result is `ok=False, error="cycle timeout"` and another pair can run; a fake engine whose result has an applied `update` on node B in pair `ab` → pair `bc` runs once after the debounce, pair `ab` is not re-run, and a dry run of `ab` triggers nothing.
 
-## T-24. Schema: node and cycle validation
+## ✅ T-24. Schema: node and cycle validation
 
 **Read:** ARCHITECTURE §7 (the four validation rules), SPEC FR-12.3.
 **Files:** `schema.py`, `tests/test_schema.py` (new; validates `CONFIG_SCHEMA` directly, no `hass` fixture needed).
