@@ -62,8 +62,34 @@ observations worth review. Link verification lives in `docs/LINK_CHECK.md`.
 
 ## Open items
 
-- Q-1 (docs/QUESTIONS.md): probatio shipped in HA 2026.9, not 2026.11 as SPEC/ARCHITECTURE say;
-  voluptuous API still works via the compat alias, so `schema.py` is unaffected.
+- Q-1 is closed (2026-10-26): probatio facts corrected in SPEC/ARCHITECTURE/RESEARCH v1.1;
+  `schema.py` stays on voluptuous.
+- Q-2 (cycle timeout under the global lock) and Q-3 (diagnostics snapshot content) are open —
+  see docs/QUESTIONS.md.
 - docs/LINK_CHECK.md: 3 outdated links, 1 half-supported claim, access notes — owner to decide
   on edits (RESEARCH/SPEC/ARCHITECTURE are frozen for agents).
 - Acceptance groups B/C and stage 0 require the owner's real accounts.
+
+## v1.1 acceptance review (2026-10-26, implementer)
+
+Reviewed SPEC/ARCHITECTURE v1.1 and T-22…T-31. No blocking objections; the review fixed four real
+defects of the T-01…T-21 implementation: orphan duplicates after a failed uid lookup (FR-8.4),
+the leak of a rule-blocked change through a later conflict merge (FR-3.5), tombstone resurrection
+of a live item after purge (FR-6.5 `present`), and the v1.0 README overclaiming multi-pair support.
+The Q-1 correction (voluptuous is a real package, not a probatio alias) was verified against the
+install log and accepted.
+
+Two decisions requested (Q-2, Q-3 in docs/QUESTIONS.md): a cycle timeout under the global lock,
+and hash-only snapshots in diagnostics.
+
+Two non-blocking notes, recorded so they are not lost:
+
+- **Star propagation latency (for T-31).** `state_changed` does not fire on a title/due edit
+  (FR-9.2), so a field change crossing a shared node travels on the next pair's polling interval:
+  worst case ≈ one `interval` per hop (≈ 2×interval through the center of a star). The README
+  should say this in one sentence, or star users will read the delay as a broken sync.
+- **Orphan-matching ambiguity (FR-8.4).** `find_match` takes the first item with an equal
+  title+downgraded-due key. If the missing side holds both the orphan and a genuinely new item
+  with the same key, the wrong one can be linked and a duplicate appears on the present side.
+  This is inherent to the heuristic (FR-8.3 already accepts it for the initial sync); recorded as
+  a known limitation, no change proposed.
