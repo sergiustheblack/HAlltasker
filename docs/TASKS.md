@@ -256,7 +256,7 @@ Replace the per-pair locks with one `asyncio.Lock`; wrap the engine call in `asy
 
 Add to `CONFIG_SCHEMA`: `a != b`; no two pairs with the same node set; forest check by union-find in configuration order with the error text from §7. Tests: each rule rejected with `vol.Invalid`; a star of three pairs on one node is accepted; `A↔B, B↔C, A↔C` is rejected naming the third pair.
 
-## T-25. Engine: orphan matching before create
+## ✅ T-25. Engine: orphan matching before create
 
 **Read:** ARCHITECTURE §6.1 steps 3a and 5 ("Orphan matching"), SPEC FR-8.4.
 **Files:** `core/matching.py`, `core/engine.py`, `tests/core/test_matching.py`, `tests/core/test_engine_plan.py`, `tests/core/test_engine_apply.py`.

@@ -14,6 +14,7 @@ from custom_components.halltasker.core.model import (
     Snapshot,
     SyncPair,
 )
+from custom_components.halltasker.plugins.base import NodeUnavailable
 from custom_components.halltasker.plugins.registry import PluginRegistry
 
 from .fakes import FULL_CAPS, FakePlugin, FakeStorage
@@ -243,3 +244,30 @@ async def test_failed_create_does_not_block_other_actions() -> None:
     assert ("update", NODE_B) in applied_kinds
     assert plugin.items[NODE_B][ext_b].title == "renamed"
     assert any(action.kind == "create" for action, _err in result.actions_failed)
+
+
+class WriteThenFailCreatePlugin(FakePlugin):
+    """Writes the item but fails the uid lookup, like a lagging todo backend."""
+
+    async def create(self, node: str, task: CanonicalTask, known_ids: frozenset[str]) -> str:
+        await super().create(node, task, known_ids)
+        raise NodeUnavailable("created item not found")
+
+
+async def test_a12_orphan_from_failed_uid_lookup_is_linked_not_duplicated() -> None:
+    engine, _store, _storage, plugin = _engine(WriteThenFailCreatePlugin())
+    plugin.add(NODE_A, TASK)
+
+    first = await engine.run_pair(PAIR, dry_run=False)
+    assert any(action.kind == "create" for action, _err in first.actions_failed)
+    assert len(plugin.items[NODE_A]) == 1
+    assert len(plugin.items[NODE_B]) == 1
+
+    second = await engine.run_pair(PAIR, dry_run=False)
+    assert [(a.kind, a.node) for a in second.actions_applied] == [("link", NODE_B)]
+    assert len(plugin.items[NODE_A]) == 1
+    assert len(plugin.items[NODE_B]) == 1
+    assert second.links == 2
+
+    third = await engine.run_pair(PAIR, dry_run=False)
+    assert third.actions_applied == []

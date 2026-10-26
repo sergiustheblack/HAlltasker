@@ -32,6 +32,21 @@ def pair_up(
     return result
 
 
+def find_match(
+    task: CanonicalTask,
+    candidates: dict[str, CanonicalTask],
+    caps_task: Capabilities,
+    caps_candidates: Capabilities,
+    tz: dt.tzinfo,
+) -> str | None:
+    """The first candidate with the same key as the task, or None."""
+    weak = _weaker_due(caps_task, caps_candidates)
+    for external_id, candidate in candidates.items():
+        if _same_key(task, candidate, weak, tz):
+            return external_id
+    return None
+
+
 def _weaker_due(caps_a: Capabilities, caps_b: Capabilities) -> Capabilities:
     due = caps_a.due if _DUE_RANK[caps_a.due] <= _DUE_RANK[caps_b.due] else caps_b.due
     return Capabilities(create=True, update=True, delete=True, due=due, description=True)

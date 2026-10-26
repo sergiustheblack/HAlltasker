@@ -13,7 +13,7 @@ from .conflict import merge
 from .diff import SideState, classify
 from .downgrade import downgrade
 from .link_store import PairLinks
-from .matching import pair_up
+from .matching import find_match, pair_up
 from .model import CanonicalTask, Capabilities, DirectionRule, Link, Snapshot, SyncPair
 from .router import allows, apply_transform, op_for_change, passes_filter
 
@@ -78,18 +78,18 @@ class SyncEngine:
         )
 
         links = self._store.links_for_pair(pair.a, pair.b)
-        tombstoned_a: set[str] = set()
-        tombstoned_b: set[str] = set()
         plan: list[Action] = []
+
+        # Step 3a: unlinked items, computed before the loop; orphan matching
+        # (step 5) removes entries, step 6 consumes the rest. Tombstoned ids
+        # are excluded by the store lookup: a tombstone link is still indexed.
+        new_a = {ext: task for ext, task in snap_a.items() if self._store.get(pair.a, ext) is None}
+        new_b = {ext: task for ext, task in snap_b.items() if self._store.get(pair.b, ext) is None}
 
         for canonical_id, node_links in links.items():
             link_a = node_links.get(pair.a)
             link_b = node_links.get(pair.b)
             if _is_tombstoned(link_a) or _is_tombstoned(link_b):
-                if link_a is not None:
-                    tombstoned_a.add(link_a.external_id)
-                if link_b is not None:
-                    tombstoned_b.add(link_b.external_id)
                 continue
             current_a = snap_a.get(link_a.external_id) if link_a is not None else None
             current_b = snap_b.get(link_b.external_id) if link_b is not None else None
@@ -99,13 +99,23 @@ class SyncEngine:
                 context.echo_updates.append((link_a, Snapshot.of(current_a)))
             if state_b.kind == "echo" and link_b is not None and current_b is not None:
                 context.echo_updates.append((link_b, Snapshot.of(current_b)))
-            plan.extend(self._decide(pair, canonical_id, link_a, state_a, link_b, state_b, tz))
-
-        plan.extend(
-            await self._plan_new_items(
-                pair, snap_a, snap_b, caps_a, caps_b, tombstoned_a, tombstoned_b, tz
+            plan.extend(
+                self._decide(
+                    pair,
+                    canonical_id,
+                    link_a,
+                    state_a,
+                    link_b,
+                    state_b,
+                    tz,
+                    new_a,
+                    new_b,
+                    caps_a,
+                    caps_b,
+                )
             )
-        )
+
+        plan.extend(await self._plan_new_items(pair, new_a, new_b, caps_a, caps_b, tz))
 
         if not self._store.pair_initialized(pair.id):
             plan = [
@@ -259,6 +269,10 @@ class SyncEngine:
         link_b: Link | None,
         state_b: SideState,
         tz: dt.tzinfo,
+        new_a: dict[str, CanonicalTask],
+        new_b: dict[str, CanonicalTask],
+        caps_a: Capabilities,
+        caps_b: Capabilities,
     ) -> list[Action]:
         if state_a.kind == "deleted" and state_b.kind == "deleted":
             return self._tombstone_both(pair, canonical_id, link_a, link_b, "deleted on both")
@@ -267,9 +281,13 @@ class SyncEngine:
         if state_b.kind == "deleted":
             return self._plan_delete(pair, canonical_id, link_b, state_b, link_a, state_a, tz)
         if state_a.kind == "missing_link":
-            return self._plan_missing(pair, canonical_id, pair.a, state_b, link_b, tz)
+            return self._plan_missing(
+                pair, canonical_id, pair.a, state_b, link_b, tz, new_a, caps_a, caps_b
+            )
         if state_b.kind == "missing_link":
-            return self._plan_missing(pair, canonical_id, pair.b, state_a, link_a, tz)
+            return self._plan_missing(
+                pair, canonical_id, pair.b, state_a, link_a, tz, new_b, caps_b, caps_a
+            )
         if state_a.kind == "changed" and state_b.kind == "changed":
             return self._plan_conflict(pair, canonical_id, link_a, state_a, link_b, state_b, tz)
         if state_a.kind == "changed":
@@ -446,10 +464,25 @@ class SyncEngine:
         present_state: SideState,
         present_link: Link | None,
         tz: dt.tzinfo,
+        new_missing: dict[str, CanonicalTask],
+        caps_missing: Capabilities,
+        caps_present: Capabilities,
     ) -> list[Action]:
         rule = pair.b_to_a if missing_node == pair.a else pair.a_to_b
         if present_state.current is None or present_link is None:
             return []
+        orphan = find_match(present_state.current, new_missing, caps_present, caps_missing, tz)
+        if orphan is not None:
+            del new_missing[orphan]
+            return [
+                Action(
+                    kind="link",
+                    node=missing_node,
+                    canonical_id=canonical_id,
+                    external_id=orphan,
+                    reason="orphan matched",
+                )
+            ]
         if rule.create and passes_filter(rule, present_state.current):
             return [
                 Action(
@@ -472,24 +505,12 @@ class SyncEngine:
     async def _plan_new_items(
         self,
         pair: SyncPair,
-        snap_a: dict[str, CanonicalTask],
-        snap_b: dict[str, CanonicalTask],
+        new_a: dict[str, CanonicalTask],
+        new_b: dict[str, CanonicalTask],
         caps_a: Capabilities,
         caps_b: Capabilities,
-        tombstoned_a: set[str],
-        tombstoned_b: set[str],
         tz: dt.tzinfo,
     ) -> list[Action]:
-        new_a = {
-            ext: task
-            for ext, task in snap_a.items()
-            if self._store.get(pair.a, ext) is None and ext not in tombstoned_a
-        }
-        new_b = {
-            ext: task
-            for ext, task in snap_b.items()
-            if self._store.get(pair.b, ext) is None and ext not in tombstoned_b
-        }
         actions: list[Action] = []
         for ext_a, ext_b in pair_up(new_a, new_b, caps_a, caps_b, tz):
             canonical_id = self._store.new_canonical_id()

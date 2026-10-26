@@ -182,3 +182,25 @@ async def test_identical_existing_items_are_linked_not_created() -> None:
     plugin.add(NODE_B, TASK)
     result = await engine.run_pair(PAIR, dry_run=True)
     assert _kinds(result) == [("link", NODE_A), ("link", NODE_B)]
+
+
+async def test_equal_unlinked_item_on_missing_side_is_linked_not_created() -> None:
+    engine, store, plugin = _engine()
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    canonical_id = store.new_canonical_id()
+    snapshot = Snapshot.of(TASK)
+    store.upsert(
+        Link(
+            canonical_id=canonical_id,
+            node=NODE_A,
+            external_id=ext_a,
+            last_observed=snapshot,
+            last_synced=snapshot,
+        )
+    )
+    store.mark_pair_initialized(PAIR.id)
+    result = await engine.run_pair(PAIR, dry_run=True)
+    assert result.ok is True
+    assert _kinds(result) == [("link", NODE_B)]
+    assert result.actions_planned[0].external_id == ext_b

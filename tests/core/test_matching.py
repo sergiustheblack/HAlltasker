@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from custom_components.halltasker.core.matching import pair_up
+from custom_components.halltasker.core.matching import find_match, pair_up
 from custom_components.halltasker.core.model import CanonicalTask, Capabilities
 
 MSK = dt.timezone(dt.timedelta(hours=3))
@@ -51,3 +51,24 @@ def test_each_item_takes_part_in_at_most_one_pair() -> None:
     pairs = pair_up(a, b, DATETIME_CAPS, DATETIME_CAPS, MSK)
     assert len(pairs) == 1
     assert pairs[0] == ("a1", "b1")
+
+
+def test_find_match_returns_first_equal_candidate() -> None:
+    task = CanonicalTask(title="milk", due=dt.date(2026, 10, 5))
+    candidates = {
+        "x": CanonicalTask(title="milk", due=dt.date(2026, 10, 5)),
+        "y": CanonicalTask(title="milk", due=dt.date(2026, 10, 5)),
+    }
+    assert find_match(task, candidates, DATE_CAPS, DATE_CAPS, MSK) == "x"
+
+
+def test_find_match_returns_none_without_a_candidate() -> None:
+    task = CanonicalTask(title="milk")
+    candidates = {"x": CanonicalTask(title="bread")}
+    assert find_match(task, candidates, DATETIME_CAPS, DATETIME_CAPS, MSK) is None
+
+
+def test_find_match_compares_due_downgraded_to_weaker_caps() -> None:
+    task = CanonicalTask(title="milk", due=dt.datetime(2026, 10, 5, 23, 30, tzinfo=MSK))
+    candidates = {"x": CanonicalTask(title="milk", due=dt.date(2026, 10, 5))}
+    assert find_match(task, candidates, DATETIME_CAPS, DATE_CAPS, MSK) == "x"
