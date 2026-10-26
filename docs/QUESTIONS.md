@@ -8,3 +8,15 @@ Context: link verification of external sources (2026-10-25) against docs/SPEC.md
 Problem: all three docs state that HA moves from voluptuous to probatio in 2026.11 (future). In fact, per the HA contributors blog (2026-09-30) and the installed homeassistant==2026.9.4 (which requires probatio==0.11.4), probatio already shipped in 2026.9. The voluptuous API keeps working in 2026.9 through a compatibility alias, so the planned `schema.py` on voluptuous is unaffected.
 Options: 1) Update the three docs to say "probatio shipped in 2026.9; voluptuous API still works via compatibility alias". 2) Keep the docs as is and note the discrepancy here only.
 Impact: none on the code; documentation accuracy only. Also found during the same check: the dev-docs link https://developers.home-assistant.io/docs/core/entity/todo/ now redirects to contributors.home-assistant.io, and TodoItem gained a `completed` field not covered by the canonical model (MVP scope is unaffected).
+
+## Q-2 (T-23) — open
+Context: review of architecture v1.1 (2026-10-26). The coordinator serializes all pairs with one global lock (§8), and `async_run_pair` awaits the engine while holding the lock.
+Problem: a hanging `todo.*` service call (a stuck CalDAV handler, an integration without internal HTTP timeouts) holds the global lock for an unbounded time and stalls every pair, including pairs whose nodes are healthy.
+Options: 1) Wrap `engine.run_pair` in `asyncio.timeout(...)` in the coordinator (a constant in `const.py`, e.g. `CYCLE_TIMEOUT_SECONDS = 120`); a timeout becomes a normal `RunResult(ok=False, error="cycle timeout")`. No architecture changes beyond §8. 2) Keep as-is and rely on the timeouts inside the target integrations.
+Recommendation: option 1; natural place is T-23.
+
+## Q-3 (T-22/T-30) — open
+Context: review of architecture v1.1. `diagnostics.py` exports `"store": link_store.to_dict()` (§10), and `Link.to_dict()` embeds full snapshots (`data` with `title`, `description`).
+Problem: the diagnostics file then contains the user's task texts. There are no secrets by construction (FR-10.4 holds), but task content is personal data the user may not expect in a file they upload to a bug report.
+Options: 1) Keep full snapshots (matches v1.0 behavior and helps debugging). 2) Export snapshots as `{"hash": ...}` only, dropping `data` from the diagnostics copy.
+Recommendation: option 2; the hashes are enough to reason about change detection in a bug report.
