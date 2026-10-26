@@ -29,10 +29,15 @@ WARNING_RATE_SECONDS = 600.0
 class SyncCoordinator:
     """Runs pair cycles on a timer, on debounced state changes, and on demand."""
 
-    def __init__(self, hass: HomeAssistant, pairs: list[SyncPair], engine: SyncEngine) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        pairs: list[SyncPair],
+        engine_factory: Callable[[SyncPair], SyncEngine],
+    ) -> None:
         self._hass = hass
         self._pairs = {pair.id: pair for pair in pairs}
-        self._engine = engine
+        self._engine_factory = engine_factory
         self._results: dict[str, RunResult] = {}
         self._locks = {pair.id: asyncio.Lock() for pair in pairs}
         self._unsubscribers: list[Callable[[], None]] = []
@@ -74,7 +79,8 @@ class SyncCoordinator:
         """Run one cycle; concurrent runs of the same pair are serialized."""
         async with self._locks[pair_id]:
             started = time.monotonic()
-            result = await self._engine.run_pair(self._pairs[pair_id], dry_run=dry_run)
+            engine = self._engine_factory(self._pairs[pair_id])
+            result = await engine.run_pair(self._pairs[pair_id], dry_run=dry_run)
             duration = time.monotonic() - started
         self._results[pair_id] = result
         _LOGGER.info(

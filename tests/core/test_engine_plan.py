@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 from custom_components.halltasker.core.engine import SyncEngine
-from custom_components.halltasker.core.link_store import LinkStore
+from custom_components.halltasker.core.link_store import LinkStore, PairLinks
 from custom_components.halltasker.core.model import (
     CanonicalTask,
     DirectionRule,
@@ -27,8 +27,8 @@ TASK = CanonicalTask(title="x", description="d", due=dt.date(2026, 10, 5))
 PAIR = SyncPair(id="p", a=NODE_A, b=NODE_B)
 
 
-def _engine() -> tuple[SyncEngine, LinkStore, FakePlugin]:
-    store = LinkStore(FakeStorage())
+def _engine() -> tuple[SyncEngine, PairLinks, FakePlugin]:
+    store = LinkStore(FakeStorage()).for_pair(PAIR)
     plugin = FakePlugin()
     plugin.caps[NODE_A] = FULL_CAPS
     plugin.caps[NODE_B] = FULL_CAPS
@@ -38,7 +38,7 @@ def _engine() -> tuple[SyncEngine, LinkStore, FakePlugin]:
     return engine, store, plugin
 
 
-def _link_both_sides(store: LinkStore, task: CanonicalTask, ext_a: str, ext_b: str) -> str:
+def _link_both_sides(store: PairLinks, task: CanonicalTask, ext_a: str, ext_b: str) -> str:
     canonical_id = store.new_canonical_id()
     snapshot = Snapshot.of(task)
     for node, ext in ((NODE_A, ext_a), (NODE_B, ext_b)):

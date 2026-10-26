@@ -12,7 +12,7 @@ from .actions import Action, RunResult
 from .conflict import merge
 from .diff import SideState, classify
 from .downgrade import downgrade
-from .link_store import LinkStore
+from .link_store import PairLinks
 from .matching import pair_up
 from .model import CanonicalTask, Capabilities, DirectionRule, Link, Snapshot, SyncPair
 from .router import allows, apply_transform, op_for_change, passes_filter
@@ -33,7 +33,7 @@ class SyncEngine:
     """Joins plugins, the store, and the decision rules into one pair cycle."""
 
     def __init__(
-        self, store: LinkStore, registry: PluginRegistry, clock: Callable[[], dt.datetime]
+        self, store: PairLinks, registry: PluginRegistry, clock: Callable[[], dt.datetime]
     ) -> None:
         self._store = store
         self._registry = registry
@@ -613,7 +613,7 @@ def _is_tombstoned(link: Link | None) -> bool:
     return link is not None and link.tombstone
 
 
-def _live_links(store: LinkStore, pair: SyncPair) -> int:
+def _live_links(store: PairLinks, pair: SyncPair) -> int:
     return sum(
         1
         for node_links in store.links_for_pair(pair.a, pair.b).values()

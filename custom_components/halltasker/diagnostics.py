@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -12,6 +13,8 @@ from .const import DOMAIN
 from .coordinator import SyncCoordinator
 from .core.actions import RunResult, action_to_dict
 from .core.link_store import LinkStore
+
+REDACTED_KEYS = {"title", "description"}
 
 
 def _result_to_dict(result: RunResult) -> dict[str, Any]:
@@ -27,31 +30,23 @@ def _result_to_dict(result: RunResult) -> dict[str, Any]:
     }
 
 
-def _store_dump(store: LinkStore, coordinator: SyncCoordinator) -> dict[str, Any]:
-    seen: set[str] = set()
-    links: list[dict[str, Any]] = []
-    for pair in coordinator.pairs.values():
-        for canonical_id, node_links in store.links_for_pair(pair.a, pair.b).items():
-            if canonical_id in seen:
-                continue
-            seen.add(canonical_id)
-            links.extend(link.to_dict() for link in node_links.values())
-    initialized = [pid for pid in coordinator.pairs if store.pair_initialized(pid)]
-    return {"links": links, "initialized_pairs": sorted(initialized)}
-
-
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
-    """Export the configuration and the storage; there are no secrets by construction."""
+    """Export the configuration and the storage with task texts redacted."""
     coordinator: SyncCoordinator | None = hass.data.get(DOMAIN, {}).get("coordinator")
     store: LinkStore | None = hass.data.get(DOMAIN, {}).get("store")
     if coordinator is None or store is None:
-        return {"pairs": [], "store": {"links": [], "initialized_pairs": []}, "results": {}}
+        return {
+            "pairs": [],
+            "store": async_redact_data({"schema": 2, "pairs": {}}, REDACTED_KEYS),
+            "results": {},
+        }
     return {
         "pairs": [asdict(pair) for pair in coordinator.pairs.values()],
-        "store": _store_dump(store, coordinator),
-        "results": {
-            pair_id: _result_to_dict(result) for pair_id, result in coordinator.results.items()
-        },
+        "store": async_redact_data(store.to_dict(), REDACTED_KEYS),
+        "results": async_redact_data(
+            {pair_id: _result_to_dict(result) for pair_id, result in coordinator.results.items()},
+            REDACTED_KEYS,
+        ),
     }
