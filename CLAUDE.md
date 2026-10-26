@@ -10,7 +10,7 @@ Authoritative documents, in priority order:
 
 - `docs/SPEC.md` — requirements. Do not change without the owner's decision.
 - `docs/ARCHITECTURE.md` — module layout, data model, engine algorithm, HA API facts, YAML schema. Signatures there are binding.
-- `docs/TASKS.md` — ordered atomic tasks for implementation agents. Mark done with `✅`.
+- `docs/TASKS.md` — ordered atomic tasks T-01…T-31 for implementation agents. Mark done with `✅`. Newer tasks live only in Yandex Tracker (`docs/TRACKER.md`): tag `claude-architect` on every issue I write, `agent:<name>` to route to an executor.
 - `docs/RESEARCH.md` — external constraints with sources, and the stage 0 protocol for Yandex CalDAV.
 - `AGENTS.md` — working rules for weak self-hosted coding agents. Keep tasks and instructions compatible with those rules: one task per commit, listed files only, no new dependencies.
 
