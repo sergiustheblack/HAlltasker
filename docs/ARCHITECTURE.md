@@ -411,7 +411,10 @@ class SyncCoordinator:
     async def async_stop(self) -> None: ...
     async def async_run_pair(self, pair_id: str, *, dry_run: bool = False) -> RunResult:
         # ONE asyncio.Lock shared by all pairs: at most one cycle runs at any time
-        # engine = self._engine_factory(pair); result = await engine.run_pair(pair, dry_run=dry_run)
+        # engine = self._engine_factory(pair)
+        # async with asyncio.timeout(CYCLE_TIMEOUT_SECONDS): result = await engine.run_pair(pair, dry_run=dry_run)
+        # TimeoutError -> RunResult(ok=False, error="cycle timeout"); the lock is released
+        # after the cycle: chained run (below)
     @property
     def results(self) -> dict[str, RunResult]:   # last result per pair, read by the sensor
     def subscribe(self, cb: Callable[[str], None]) -> Callable[[], None]:   # notifies sensors
@@ -420,6 +423,10 @@ class SyncCoordinator:
 In `__init__.py`: `engine_factory = lambda pair: SyncEngine(link_store.for_pair(pair), registry, clock=dt_util.now)`.
 
 Why one global lock: pairs that share a node read and write the same `todo.*` entity. Two concurrent cycles could interleave a `create` in one pair with the uid lookup of a `create` in another (§4), and the store is saved as a whole. Cycles are short (a few service calls), so serializing them costs nothing noticeable.
+
+**Cycle timeout** (SPEC FR-9.4, Q-2). A hanging `todo.*` service call would hold the global lock forever, so the engine call is wrapped in `asyncio.timeout(CYCLE_TIMEOUT_SECONDS)` (`const.py`, 120). The timeout is caught in the coordinator and becomes `RunResult(ok=False, error="cycle timeout")` with empty action lists; it is logged like any other pair error. Interrupting a cycle is safe: the store is saved after every applied action (§6.1 step 8), and a `create` cancelled between the service call and the uid lookup leaves an orphan that step 5 links on the next cycle.
+
+**Chained run** (SPEC FR-12.6). `state_changed` does not fire on a title or due edit (FR-9.2), so a change written by pair P1 into a shared node Y would otherwise reach the other pairs of Y only on their next interval (one `interval` per hop). Therefore, after a cycle with a non-empty `actions_applied`, the coordinator collects the nodes of the applied `create`/`update`/`complete`/`delete`/`soft_delete` actions and schedules every other enabled pair that contains one of those nodes through the same 2-second debounce as `state_changed`. The chain ends by itself: a pair whose nodes are unchanged applies nothing. Dry runs never chain.
 
 HA facts (2026.9): a function passed to `async_call_later` or `async_track_time_interval` must itself be decorated with `@callback` (decorating a factory that returns it is not enough); otherwise it runs in the executor and `hass.async_create_task` raises a thread-safety `RuntimeError`.
 
@@ -481,7 +488,7 @@ The core does not import HA: `LinkStore` accepts an object with the methods `asy
 
 - `sensor.py`: one `SensorEntity` per pair, `unique_id = f"halltasker_{pair.id}"`, `name = f"HAlltasker {pair.id}"`, state from `RunResult`: `error` if `not ok`, `dry_run` if the mode is dry_run, `disabled` if `not pair.enabled`, otherwise `ok`. Attributes per FR-10.3. Updated through `coordinator.subscribe`.
 - Services in `__init__.py`: `sync_now` (`pair_id` optional) and `dry_run` (`pair_id` optional, `SupportsResponse.ONLY`, returns `{"pairs": {pair_id: [actions]}}`), both registered in `async_setup_entry`; `reload` (no fields), registered in `async_setup` with `async_register_admin_service` (§7). Without `pair_id`, `sync_now` runs the pairs one after another in configuration order. Descriptions are in `services.yaml`.
-- `diagnostics.py`: `{"pairs": [...], "store": link_store.to_dict(), "results": {...}}`.
+- `diagnostics.py`: `{"pairs": [...], "store": async_redact_data(link_store.to_dict(), {"title", "description"}), "results": {...}}` with `async_redact_data` from `homeassistant.components.diagnostics` (SPEC FR-10.4, Q-3): the snapshots keep `hash`, `status` and `due`, the task texts are replaced by `**REDACTED**`. `results` contain actions with tasks; redact them with the same call.
 
 ## 11. Logging
 
@@ -528,4 +535,5 @@ New in v1.1:
 - Locally accepted changes for operations forbidden by a rule (§6.1 step 5, SPEC FR-3.5).
 - Service `halltasker.reload`, because `reload_config_entry` does not re-read YAML (§7, SPEC FR-10.5).
 - End-to-end tests with an in-memory `todo` platform (§12).
+- From the implementer's review of v1.1 (Q-2, Q-3): cycle timeout under the global lock and chained runs of the pairs of a written node (§8); task texts redacted in diagnostics (§10).
 - Corrected facts: probatio/voluptuous status in HA 2026.9 (Q-1), `TodoItem.completed` (§4, §7).
