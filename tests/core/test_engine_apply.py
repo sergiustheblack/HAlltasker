@@ -334,3 +334,49 @@ async def test_a11_blocked_change_is_accepted_locally_and_does_not_leak() -> Non
     assert _only(plugin.items[NODE_A]).title == "renamed"
     assert _only(plugin.items[NODE_A]).due == dt.date(2026, 10, 7)
     assert _only(plugin.items[NODE_B]).title == "x"
+
+
+async def test_tombstone_purge_keeps_live_item_and_drops_gone_one() -> None:
+    pair = SyncPair(id="p", a=NODE_A, b=NODE_B, a_to_b=DirectionRule(delete="false"))
+    storage = FakeStorage()
+    store = LinkStore(storage).for_pair(pair)
+    plugin = FakePlugin()
+    plugin.caps[NODE_A] = FULL_CAPS
+    plugin.caps[NODE_B] = FULL_CAPS
+    registry = PluginRegistry()
+    registry.register(plugin)
+    now = {"t": NOW}
+    engine = SyncEngine(store, registry, clock=lambda: now["t"])
+
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    canonical_id = store.new_canonical_id()
+    snapshot = Snapshot.of(TASK)
+    for node, ext in ((NODE_A, ext_a), (NODE_B, ext_b)):
+        store.upsert(
+            Link(
+                canonical_id=canonical_id,
+                node=node,
+                external_id=ext,
+                last_observed=snapshot,
+                last_written=snapshot,
+                last_synced=snapshot,
+            )
+        )
+    store.mark_pair_initialized(pair.id)
+
+    del plugin.items[NODE_A][ext_a]
+    deleted = await engine.run_pair(pair, dry_run=False)
+    assert deleted.ok is True
+    assert _only(plugin.items[NODE_B]) == TASK  # delete: false keeps the item
+
+    now["t"] = NOW + dt.timedelta(days=31)
+    purged_cycle = await engine.run_pair(pair, dry_run=False)
+
+    assert purged_cycle.ok is True
+    assert purged_cycle.actions_applied == []  # nothing re-created
+    assert _only(plugin.items[NODE_B]) == TASK
+    assert plugin.items[NODE_A] == {}
+    remaining = store.links_of(canonical_id)
+    assert set(remaining) == {NODE_B}  # the gone X link is purged, the live Y kept
+    assert remaining[NODE_B].tombstone is True

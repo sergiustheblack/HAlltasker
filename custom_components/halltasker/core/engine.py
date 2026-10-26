@@ -53,7 +53,14 @@ class SyncEngine:
         applied, failed = await self._execute(plan, context)
         if not was_initialized:
             self._store.mark_pair_initialized(pair.id)
-        if applied or not was_initialized or context.echo_updates or context.accepted:
+        purged = self._store.purge_tombstones(
+            now=self._clock(),
+            present={
+                pair.a: frozenset(context.snaps[pair.a]),
+                pair.b: frozenset(context.snaps[pair.b]),
+            },
+        )
+        if applied or not was_initialized or context.echo_updates or context.accepted or purged:
             await self._store.save()
         return RunResult(
             ok=True,
