@@ -70,6 +70,14 @@ observations worth review. Link verification lives in `docs/LINK_CHECK.md`.
   on edits (RESEARCH/SPEC/ARCHITECTURE are frozen for agents).
 - Acceptance groups B/C and stage 0 require the owner's real accounts.
 
+## v1.1 implementation deviations
+
+- T-26: `tests/core/fakes.py` `FakePlugin.update` now applies only the fields listed in
+  `changed` (merge with `dataclasses.replace`) instead of replacing the whole task. The
+  plugin contract (ARCHITECTURE §3) says "Writes only the fields from changed"; the old
+  fake violated it and hid the point of scenario A11. `fakes.py` is not in the T-26 file
+  list, hence this note.
+
 ## v1.1 acceptance review (2026-10-26, implementer)
 
 Reviewed SPEC/ARCHITECTURE v1.1 and T-22…T-31. No blocking objections; the review fixed four real
