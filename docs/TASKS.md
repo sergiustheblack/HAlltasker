@@ -298,7 +298,7 @@ Register `reload` in `async_setup` with `async_register_admin_service` exactly a
 
 `tests/todo_platform.py`: `MemoryTodoEntity(TodoListEntity)` with a `supported_features` constructor argument and an `async def setup_memory_todo(hass, entity_id_suffix, features) -> MemoryTodoEntity` helper that registers the `test` integration and its `todo` platform through `mock_integration` / `mock_platform` / `MockConfigEntry` and waits until the entity state exists. `tests/test_e2e.py`: set up HAlltasker from YAML with a pair of two such entities and run cycles through `halltasker.sync_now`. Scenarios from SPEC §7: A1, A2, A3, A4 (`delete: true`), A7 with the B entity lacking `SET_DUE_DATETIME_ON_ITEM` (bit 32), A9. Assert through `todo.get_items` responses, not through plugin internals.
 
-## T-31. User documentation v1.1
+## ✅ T-31. User documentation v1.1
 
 **Files:** `README.md` (Russian, see the exception in AGENTS.md), `README.en.md`.
 
