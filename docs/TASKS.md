@@ -284,7 +284,7 @@ Call `purge_tombstones` at the end of every successful non-dry cycle with `prese
 
 One `LinkStore`, one `FakePlugin` with three nodes A, B, C, two engines built with `store.for_pair(pair_ab)` and `store.for_pair(pair_bc)`, cycles run alternately AB, BC, AB, BC. Tests: create in A reaches C after the second BC cycle; rename in C reaches A; delete in A with `delete: true` in both pairs removes the item in B and then in C; after all that, one more AB and BC cycle apply nothing and do not save; `delete: false` in AB and `delete: true` in BC: delete in A → B keeps the item, C keeps the item, nothing is re-created on later cycles.
 
-## T-29. Service `halltasker.reload`
+## ✅ T-29. Service `halltasker.reload`
 
 **Read:** ARCHITECTURE §7 ("Reload"), §10, SPEC FR-10.5.
 **Files:** `__init__.py`, `services.yaml`, `strings.json`, `translations/en.json`, `translations/ru.json`, `tests/test_services.py`.
