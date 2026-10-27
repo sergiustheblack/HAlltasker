@@ -47,33 +47,33 @@ class SyncEngine:
     async def run_pair(self, pair: SyncPair, *, dry_run: bool) -> RunResult:
         try:
             plan, live_links, context = await self._plan(pair)
+            if dry_run or pair.initial_sync == "dry_run":
+                return RunResult(ok=True, error=None, actions_planned=plan, links=live_links)
+            was_initialized = self._store.pair_initialized(pair.id)
+            applied, failed = await self._execute(plan, context)
+            if not was_initialized:
+                self._store.mark_pair_initialized(pair.id)
+            purged = self._store.purge_tombstones(
+                now=self._clock(),
+                present={
+                    pair.a: frozenset(context.snaps[pair.a]),
+                    pair.b: frozenset(context.snaps[pair.b]),
+                },
+            )
+            if not was_initialized or context.echo_updates or context.accepted or purged:
+                await self._store.save()
+            return RunResult(
+                ok=True,
+                error=None,
+                actions_planned=plan,
+                actions_applied=applied,
+                actions_failed=failed,
+                links=_live_links(self._store, pair),
+            )
         except NodeUnavailable as err:
             return RunResult(ok=False, error=str(err))
         except Exception as err:
             return RunResult(ok=False, error=f"{type(err).__name__}: {err}")
-        if dry_run or pair.initial_sync == "dry_run":
-            return RunResult(ok=True, error=None, actions_planned=plan, links=live_links)
-        was_initialized = self._store.pair_initialized(pair.id)
-        applied, failed = await self._execute(plan, context)
-        if not was_initialized:
-            self._store.mark_pair_initialized(pair.id)
-        purged = self._store.purge_tombstones(
-            now=self._clock(),
-            present={
-                pair.a: frozenset(context.snaps[pair.a]),
-                pair.b: frozenset(context.snaps[pair.b]),
-            },
-        )
-        if applied or not was_initialized or context.echo_updates or context.accepted or purged:
-            await self._store.save()
-        return RunResult(
-            ok=True,
-            error=None,
-            actions_planned=plan,
-            actions_applied=applied,
-            actions_failed=failed,
-            links=_live_links(self._store, pair),
-        )
 
     async def _plan(self, pair: SyncPair) -> tuple[list[Action], int, _CycleContext]:
         plugin_a = self._registry.for_node(pair.a)
@@ -143,6 +143,7 @@ class SyncEngine:
     ) -> tuple[list[Action], list[tuple[Action, str]]]:
         applied: list[Action] = []
         failed: list[tuple[Action, str]] = []
+        failed_deletes: set[str] = set()
         now = self._clock().isoformat()
         context.targeted = {
             (action.node, action.canonical_id)
@@ -150,10 +151,14 @@ class SyncEngine:
             if action.kind in ("update", "complete")
         }
         for action in plan:
+            if action.kind == "tombstone" and action.canonical_id in failed_deletes:
+                continue
             try:
                 await self._apply(action, context, now)
             except Exception as err:
                 failed.append((action, f"{type(err).__name__}: {err}"))
+                if action.kind in ("delete", "soft_delete"):
+                    failed_deletes.add(action.canonical_id)
                 continue
             applied.append(action)
             await self._store.save()
