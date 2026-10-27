@@ -95,7 +95,7 @@ Not included:
 ### FR-5 Conflict resolution
 
 1. A change on one side only is propagated to the other side according to the direction rule.
-2. Changes on both sides with non-overlapping sets of fields are merged.
+2. Changes on both sides with non-overlapping sets of fields are merged. The merged result is written to a side only if the direction rule toward that side allows `update` (or `complete`) and the node supports it (FR-1.3). If neither side may be written, both changes are accepted locally (FR-3.5).
 3. Overlapping fields are taken from the side named by the pair policy (`prefer_a` default, `prefer_b`).
 4. Deletion on one side and a change on the other: `prefer_a`/`prefer_b` determines whether the deletion wins (if the preferred side is the one that was deleted) or the re-creation wins (if `create` is allowed in the direction toward the side that deleted). Otherwise the link gets a tombstone with no actions.
 
