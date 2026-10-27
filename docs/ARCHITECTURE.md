@@ -1,4 +1,4 @@
-# HAlltasker — architecture (v1.1, 2026-10-26)
+# HAlltasker — architecture (v1.1.1, 2026-10-28)
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/ARCHITECTURE.md](ru/ARCHITECTURE.md); if they differ, this file wins.
 
@@ -214,7 +214,7 @@ Mapping:
 | `status == "completed"` | `status = "done"`, otherwise `"open"` |
 | `due` string | `date` if 10 characters without `T`; otherwise `dt_util.parse_datetime`; if the result is naive — `replace(tzinfo=dt_util.get_default_time_zone())` |
 
-Create (SPEC FR-1, item 4): after `add_item` the plugin calls `get_items`, takes the items whose `uid` is not in the passed set `known_ids`, and picks the one whose canonical form equals the downgraded task being created. If there are several, take the first one. If there are none, retry the read after 1 s, at most 3 attempts, then raise `NodeUnavailable("created item not found")`. For this, the base contract `Plugin.create` (§3) takes `known_ids: frozenset[str]` — the identifiers already known to the core at the time of the call.
+Create (SPEC FR-1, item 4): after `add_item` the plugin calls `get_items`, takes the items whose `uid` is not in the passed set `known_ids`, and picks the one whose canonical form equals the downgraded task being created **with `status` forced to `open`**, because stock `todo.add_item` has no status input and always creates an open item. If the task being created is `done`, then once the item is found the plugin calls `todo.update_item` with `status: "completed"` (the item id is the found uid) before returning the uid; a failure of that call raises `NodeUnavailable("created item not completed")`. The engine never sees the intermediate open state. If the process dies between the two calls, the next cycle finds an orphan (step 5 below), which the engine then brings to the expected state with an `update`. If there are several, take the first one. If there are none, retry the read after 1 s, at most 3 attempts, then raise `NodeUnavailable("created item not found")`. For this, the base contract `Plugin.create` (§3) takes `known_ids: frozenset[str]` — the identifiers already known to the core at the time of the call.
 
 ## 5. Downgrade (`core/downgrade.py`)
 
@@ -289,9 +289,23 @@ An engine instance works on **one pair's namespace**: the coordinator builds it 
 
    `complete`: a change of the `status` field alone counts as the `complete` operation and is checked against the `complete` rule, not `update`.
 
-   **Orphan matching** (SPEC FR-8.4). A missing link on side X can mean that an earlier `create` on X succeeded but its uid was not found (§4), so an unlinked "orphan" item already sits in X. Before planning `create` on X, call `matching.find_match(task, new_X, caps_present, caps_X, tz) -> str | None` (`core/matching.py`; same key as `pair_up`: equal `title` and equal `due` downgraded to the weaker capabilities; the first match in dict order wins) with the present side's current task. If it returns an external id: plan `link` on X with that id (no write) and delete the id from `new_X`, so step 6 does not process it again. If it returns `None`: plan as in the table.
+   **Capability gating** (SPEC FR-1.3). A write on target side X is planned only if the direction rule toward X allows the operation **and** `caps_X` supports it. One helper in `core/router.py` holds the whole rule and every planning path uses it; no path checks `rule.*` or `caps.*` inline:
 
-   **Locally accepted change** (SPEC FR-3.5). When exactly one side is `changed`, the other side is `unchanged` or `echo`, and the decision returns no action (the direction rule forbids the operation or the filter rejects the task), the change is accepted on the source side: append `(source_link, Snapshot.of(current))` to `context.accepted`. Step 8 sets `last_observed` and `last_synced` of that link to the snapshot. Without this, the stale `changed_fields` would later leak the forbidden change into the other side through a conflict merge.
+   ```python
+   Operation = Literal["create", "update", "complete", "delete", "soft_delete"]
+   def allowed(rule: DirectionRule, caps: Capabilities, op: Operation) -> bool:
+       # create       -> rule.create and caps.create
+       # update       -> rule.update and caps.update
+       # complete     -> rule.complete and caps.update
+       # delete       -> rule.delete == "true" and caps.delete
+       # soft_delete  -> rule.delete == "soft" and caps.update   (it is an update of status, not a deletion)
+   ```
+
+   Callers: `_plan_update` (table rows 2–3), `_plan_missing` and `_plan_new_items` (`create`), `_plan_delete` (`delete`/`soft_delete` toward Y and the resurrection `create` toward X of §6.2), `_plan_conflict` (the `update` of each side; v1.1 checked neither the rule nor the capabilities there, which is a defect; the filter is still not applied to a merge), and the orphan update below. A capability that is off behaves exactly as a rule that forbids the operation: `update`/`complete` → no action, the change is accepted locally (below); `create` of a new item → `link` only ("not propagated"); `create` on a missing link → `tombstone` ("create not allowed"); `delete`/`soft_delete` → tombstone only, as with `delete: false`. `delete: true` on a node without `caps.delete` does **not** fall back to `soft`. Reasons stay as today; a `link`/`tombstone` planned because of a capability appends " (not supported by node)" to its reason.
+
+   **Orphan matching** (SPEC FR-8.4). A missing link on side X can mean that an earlier `create` on X succeeded but its uid was not found (§4), so an unlinked "orphan" item already sits in X. Before planning `create` on X, call `matching.find_match(expected, new_X, caps_present, caps_X, tz) -> str | None` (`core/matching.py`; same key as `pair_up`: equal `title` and equal `due` downgraded to the weaker capabilities, `status` and `description` are not part of the key; the first match in dict order wins) with `expected = apply_transform(rule_toward_X, present.current, tz)` — the task that `create` on X would write (step 6 and §6.2 build the create action from the same expression). `find_match` downgrades `due` itself; no extra downgrade is needed. Matching the untransformed task would miss an orphan created from the transformed one (`title_prefix`, `due: date_only`/`drop`) and produce a duplicate on both sides. If it returns an external id: plan `link` on X with that id and delete the id from `new_X`, so step 6 does not process it again. Then, if `equivalent(orphan_current, expected, caps_X, tz)` (§5) is false, plan after the `link` an `update`/`complete` on X: `task = expected`, `changed = {f for f in FIELDS if getattr(downgrade(expected, caps_X, tz), f) != getattr(orphan_current, f)}`, kind by `op_for_change(changed)`, `reason = "orphan differs"`, gated by `allowed` like any update; if gated, only the `link` remains. This brings an orphan left open by a failed completion (§4) to `done` and converges a stale orphan instead of leaving the pair divergent. If `find_match` returns `None`: plan as in the table.
+
+   **Locally accepted change** (SPEC FR-3.5). When the decision for a canonical task plans no write action (`create`, `update`, `complete`, `delete`, `soft_delete`), every side in state `changed` whose link exists is accepted locally: append `(link, Snapshot.of(current))` to `context.accepted`. Step 8 sets `last_observed` and `last_synced` of that link to the snapshot. This covers one changed side with the operation forbidden by the rule or the capability or the task rejected by the filter (v1.1), both changed sides when both merge writes are gated, and a matched orphan whose update is gated. When a merge writes to one side only, the other side is refreshed by step 8 ("refresh the source") and needs no entry. Without this, the stale `changed_fields` would later leak the forbidden change into the other side through a conflict merge.
 
 6. **New items.** Use the `new_a`/`new_b` left after step 5. First `matching.pair_up(new_a, new_b, caps_a, caps_b, tz)` (FR-8.3): a match of `title` and downgraded `due` → `link` on both sides with no write. For every other new item on X, with a fresh canonical id:
    - if the rule X→Y allows `create` and the filter passes: `link(X, eid)` **then** `create(Y)`. The source link comes first, so if the create fails, the next cycle sees `missing_link` on Y and retries (with orphan matching);
@@ -537,3 +551,10 @@ New in v1.1:
 - End-to-end tests with an in-memory `todo` platform (§12).
 - From the implementer's review of v1.1 (Q-2, Q-3): cycle timeout under the global lock and chained runs of the pairs of a written node (§8); task texts redacted in diagnostics (§10).
 - Corrected facts: probatio/voluptuous status in HA 2026.9 (Q-1), `TodoItem.completed` (§4, §7).
+
+New in v1.1.1 (2026-10-28), from review remarks on IT-21, IT-24, IT-34:
+
+- `router.allowed(rule, caps, op)` gates every planned write by rule **and** target capabilities, including the conflict merge, which v1.1 did not gate at all; `soft_delete` needs `caps.update` (§6.1 step 5, "Capability gating").
+- Locally accepted change generalized: no write action planned → every `changed` side accepted (§6.1 step 5).
+- `ha_todo.create` of a done task = `add_item` + lookup with `status` forced open + `update_item(status)` by uid (§4).
+- Orphan matching uses `apply_transform(rule, present.current, tz)` — what `create` would write — and converges a differing orphan with a gated `update`/`complete` (§6.1 step 5).
