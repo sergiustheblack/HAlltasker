@@ -9,6 +9,8 @@ from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.reload import async_integration_yaml_config
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
@@ -29,6 +31,7 @@ _LOGGER = logging.getLogger(__package__)
 __all__ = ["CONFIG_SCHEMA", "DOMAIN"]
 
 SERVICE_DRY_RUN = "dry_run"
+SERVICE_RELOAD = "reload"
 SERVICE_SYNC_NOW = "sync_now"
 ATTR_PAIR_ID = "pair_id"
 
@@ -38,6 +41,17 @@ SERVICE_SCHEMA = vol.Schema({vol.Optional(ATTR_PAIR_ID): cv.string})
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Store the YAML section and start the import flow once."""
     hass.data.setdefault(DOMAIN, {})
+
+    async def handle_reload(call: ServiceCall) -> None:
+        reloaded = await async_integration_yaml_config(hass, DOMAIN)
+        if reloaded is None or DOMAIN not in reloaded:
+            _LOGGER.error("halltasker: reload skipped, configuration is missing or invalid")
+            return
+        hass.data[DOMAIN]["yaml"] = reloaded[DOMAIN]
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            await hass.config_entries.async_reload(entry.entry_id)
+
+    async_register_admin_service(hass, DOMAIN, SERVICE_RELOAD, handle_reload)
     conf: dict[str, Any] | None = config.get(DOMAIN)
     if conf is not None:
         hass.data[DOMAIN]["yaml"] = conf

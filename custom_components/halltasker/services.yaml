@@ -19,3 +19,7 @@ dry_run:
       example: yandex_to_icloud
       selector:
         text:
+
+reload:
+  name: Reload
+  description: Re-read configuration.yaml and restart the integration with the new configuration.
