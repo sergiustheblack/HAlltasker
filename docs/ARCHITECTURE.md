@@ -522,7 +522,8 @@ Commands: see `CLAUDE.md`.
 
 ## 13. Future extension
 
-- New plugin: a module in `plugins/`, the class inherits `Plugin`, registered in `registry.py`; a node string with a prefix such as `jira:PROJ-123` is resolved through `matches`. The core does not change.
+- New plugin for a **task-like** source: a module in `plugins/`, the class inherits `Plugin`, registered in `registry.py`; a node string with a prefix such as `jira:PROJ-123` is resolved through `matches`. The core does not change as long as the source fits the canonical model of §2 (`FIELDS`, `Capabilities`). `schema.py` currently accepts only `todo.*` node strings, so a non-`todo` node also needs a schema change.
+- Other resource kinds (calendar events, shopping items with quantities, tracker issues) do **not** fit: `FIELDS`, `Capabilities`, `diff`, `conflict`, `downgrade` and `matching` are written for the four task fields, and `extensions` are dropped by the downgrade and ignored by the diff. Supporting them is an architecture v2 (resource kind + field profile + per-field capabilities, same engine); the decision record is Tracker issue IT-41. Not started until the task MVP is verified in a real HA.
 - Groups of N nodes: in v1.1 a node may already be shared by several pairs (a forest of pairs). A true N-node group with one canonical task across all nodes would need a new namespace kind and a generalized decision table; not planned.
 - UI: config/options flow on top of the same `parse_pairs`; YAML stays the source of truth until a separate decision.
 
