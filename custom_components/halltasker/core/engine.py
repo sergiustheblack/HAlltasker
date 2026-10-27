@@ -15,7 +15,11 @@ from .downgrade import downgrade
 from .link_store import PairLinks
 from .matching import find_match, pair_up
 from .model import CanonicalTask, Capabilities, DirectionRule, Link, Snapshot, SyncPair
-from .router import allows, apply_transform, op_for_change, passes_filter
+from .router import Operation, allowed, apply_transform, op_for_change, passes_filter
+
+_RULE_ONLY_CAPS = Capabilities(
+    create=True, update=True, delete=True, due="datetime", description=True
+)
 
 
 @dataclass
@@ -290,9 +294,13 @@ class SyncEngine:
         if state_a.kind == "deleted" and state_b.kind == "deleted":
             return self._tombstone_both(pair, canonical_id, link_a, link_b, "deleted on both")
         if state_a.kind == "deleted":
-            return self._plan_delete(pair, canonical_id, link_a, state_a, link_b, state_b, tz)
+            return self._plan_delete(
+                pair, canonical_id, link_a, state_a, link_b, state_b, caps_a, caps_b, tz
+            )
         if state_b.kind == "deleted":
-            return self._plan_delete(pair, canonical_id, link_b, state_b, link_a, state_a, tz)
+            return self._plan_delete(
+                pair, canonical_id, link_b, state_b, link_a, state_a, caps_a, caps_b, tz
+            )
         if state_a.kind == "missing_link":
             return self._plan_missing(
                 pair, canonical_id, pair.a, state_b, link_b, tz, new_a, caps_a, caps_b
@@ -302,7 +310,11 @@ class SyncEngine:
                 pair, canonical_id, pair.b, state_a, link_a, tz, new_b, caps_b, caps_a
             )
         if state_a.kind == "changed" and state_b.kind == "changed":
-            return self._plan_conflict(pair, canonical_id, link_a, state_a, link_b, state_b, tz)
+            actions = self._plan_conflict(
+                pair, canonical_id, link_a, state_a, link_b, state_b, caps_a, caps_b, tz
+            )
+            _accept_locally(actions, context, (link_a, state_a), (link_b, state_b))
+            return actions
         if state_a.kind == "changed":
             actions = self._plan_update(
                 pair.a_to_b,
@@ -311,10 +323,11 @@ class SyncEngine:
                 pair.b,
                 canonical_id,
                 link_b.external_id if link_b is not None else None,
+                caps_b,
                 tz,
                 "changed on A",
             )
-            _accept_locally(actions, link_a, state_a, state_b, context)
+            _accept_locally(actions, context, (link_a, state_a))
             return actions
         if state_b.kind == "changed":
             actions = self._plan_update(
@@ -324,10 +337,11 @@ class SyncEngine:
                 pair.a,
                 canonical_id,
                 link_a.external_id if link_a is not None else None,
+                caps_a,
                 tz,
                 "changed on B",
             )
-            _accept_locally(actions, link_b, state_b, state_a, context)
+            _accept_locally(actions, context, (link_b, state_b))
             return actions
         return []
 
@@ -339,11 +353,12 @@ class SyncEngine:
         node: str,
         canonical_id: str,
         external_id: str | None,
+        caps: Capabilities,
         tz: dt.tzinfo,
         reason: str,
     ) -> list[Action]:
         operation = op_for_change(changed)
-        if not allows(rule, operation) or not passes_filter(rule, source):
+        if not allowed(rule, caps, operation) or not passes_filter(rule, source):
             return []
         kind = "complete" if operation == "complete" else "update"
         return [
@@ -366,6 +381,8 @@ class SyncEngine:
         state_a: SideState,
         link_b: Link | None,
         state_b: SideState,
+        caps_a: Capabilities,
+        caps_b: Capabilities,
         tz: dt.tzinfo,
     ) -> list[Action]:
         if state_a.current is None or state_b.current is None:
@@ -378,7 +395,7 @@ class SyncEngine:
             pair.conflict,
         )
         actions: list[Action] = []
-        if write_a and link_a is not None:
+        if write_a and link_a is not None and allowed(pair.b_to_a, caps_a, "update"):
             actions.append(
                 Action(
                     kind="update",
@@ -390,7 +407,7 @@ class SyncEngine:
                     reason="conflict merged",
                 )
             )
-        if write_b and link_b is not None:
+        if write_b and link_b is not None and allowed(pair.a_to_b, caps_b, "update"):
             actions.append(
                 Action(
                     kind="update",
@@ -412,30 +429,38 @@ class SyncEngine:
         state_x: SideState,
         link_y: Link | None,
         state_y: SideState,
+        caps_a: Capabilities,
+        caps_b: Capabilities,
         tz: dt.tzinfo,
     ) -> list[Action]:
         node_x = link_x.node
         node_y = pair.b if node_x == pair.a else pair.a
+        caps_x = caps_a if node_x == pair.a else caps_b
+        caps_y = caps_b if node_x == pair.a else caps_a
         rule_x_to_y = pair.a_to_b if node_x == pair.a else pair.b_to_a
         rule_y_to_x = pair.b_to_a if node_x == pair.a else pair.a_to_b
         prefers_x = (pair.conflict == "prefer_a") == (node_x == pair.a)
 
-        if (
-            state_y.kind == "changed"
-            and state_y.current is not None
-            and not prefers_x
-            and rule_y_to_x.create
-            and passes_filter(rule_y_to_x, state_y.current)
-        ):
-            return [
-                Action(
-                    kind="create",
-                    node=node_x,
-                    canonical_id=canonical_id,
-                    task=apply_transform(rule_y_to_x, state_y.current, tz),
-                    reason="re-created from the other side after deletion",
-                )
-            ]
+        if state_y.kind == "changed" and state_y.current is not None and not prefers_x:
+            if allowed(rule_y_to_x, caps_x, "create") and passes_filter(
+                rule_y_to_x, state_y.current
+            ):
+                return [
+                    Action(
+                        kind="create",
+                        node=node_x,
+                        canonical_id=canonical_id,
+                        task=apply_transform(rule_y_to_x, state_y.current, tz),
+                        reason="re-created from the other side after deletion",
+                    )
+                ]
+            return self._tombstone_both(
+                pair,
+                canonical_id,
+                link_x,
+                link_y,
+                _reason_with_capability(rule_y_to_x, caps_x, "create", "create not allowed"),
+            )
 
         if link_y is None:
             return [
@@ -449,7 +474,7 @@ class SyncEngine:
             ]
 
         actions: list[Action] = []
-        if rule_x_to_y.delete == "true":
+        if allowed(rule_x_to_y, caps_y, "delete"):
             actions.append(
                 Action(
                     kind="delete",
@@ -459,7 +484,7 @@ class SyncEngine:
                     reason="deleted on the other side",
                 )
             )
-        elif rule_x_to_y.delete == "soft":
+        elif allowed(rule_x_to_y, caps_y, "soft_delete"):
             actions.append(
                 Action(
                     kind="soft_delete",
@@ -470,7 +495,9 @@ class SyncEngine:
                     reason="deleted on the other side",
                 )
             )
-        actions.extend(self._tombstone_both(pair, canonical_id, link_x, link_y, "deleted"))
+        operation = "delete" if allowed(rule_x_to_y, _RULE_ONLY_CAPS, "delete") else "soft_delete"
+        reason = _reason_with_capability(rule_x_to_y, caps_y, operation, "deleted")
+        actions.extend(self._tombstone_both(pair, canonical_id, link_x, link_y, reason))
         return actions
 
     def _plan_missing(
@@ -500,7 +527,7 @@ class SyncEngine:
                     reason="orphan matched",
                 )
             ]
-        if rule.create and passes_filter(rule, present_state.current):
+        if allowed(rule, caps_missing, "create") and passes_filter(rule, present_state.current):
             return [
                 Action(
                     kind="create",
@@ -515,7 +542,7 @@ class SyncEngine:
                 kind="tombstone",
                 node=missing_node,
                 canonical_id=canonical_id,
-                reason="create not allowed",
+                reason=_reason_with_capability(rule, caps_missing, "create", "create not allowed"),
             )
         ]
 
@@ -553,7 +580,7 @@ class SyncEngine:
             del new_b[ext_b]
         for external_id, task in new_a.items():
             canonical_id = self._store.new_canonical_id()
-            if allows(pair.a_to_b, "create") and passes_filter(pair.a_to_b, task):
+            if allowed(pair.a_to_b, caps_b, "create") and passes_filter(pair.a_to_b, task):
                 actions.append(
                     Action(
                         kind="link",
@@ -579,12 +606,14 @@ class SyncEngine:
                         node=pair.a,
                         canonical_id=canonical_id,
                         external_id=external_id,
-                        reason="not propagated to B",
+                        reason=_reason_with_capability(
+                            pair.a_to_b, caps_b, "create", "not propagated to B"
+                        ),
                     )
                 )
         for external_id, task in new_b.items():
             canonical_id = self._store.new_canonical_id()
-            if allows(pair.b_to_a, "create") and passes_filter(pair.b_to_a, task):
+            if allowed(pair.b_to_a, caps_a, "create") and passes_filter(pair.b_to_a, task):
                 actions.append(
                     Action(
                         kind="link",
@@ -610,7 +639,9 @@ class SyncEngine:
                         node=pair.b,
                         canonical_id=canonical_id,
                         external_id=external_id,
-                        reason="not propagated to A",
+                        reason=_reason_with_capability(
+                            pair.b_to_a, caps_a, "create", "not propagated to A"
+                        ),
                     )
                 )
         return actions
@@ -649,17 +680,26 @@ class SyncEngine:
 
 def _accept_locally(
     actions: list[Action],
-    source_link: Link | None,
-    source_state: SideState,
-    other_state: SideState,
     context: _CycleContext,
+    *sides: tuple[Link | None, SideState],
 ) -> None:
-    """FR-3.5: a change the rule does not propagate becomes the synced state."""
-    if actions or source_link is None or source_state.current is None:
+    """Accept changed sides when the decision contains no external write."""
+    if any(
+        action.kind in ("create", "update", "complete", "delete", "soft_delete")
+        for action in actions
+    ):
         return
-    if other_state.kind not in ("unchanged", "echo"):
-        return
-    context.accepted.append((source_link, Snapshot.of(source_state.current)))
+    for link, state in sides:
+        if link is not None and state.kind == "changed" and state.current is not None:
+            context.accepted.append((link, Snapshot.of(state.current)))
+
+
+def _reason_with_capability(
+    rule: DirectionRule, caps: Capabilities, op: Operation, reason: str
+) -> str:
+    if not allowed(rule, caps, op) and allowed(rule, _RULE_ONLY_CAPS, op):
+        return f"{reason} (not supported by node)"
+    return reason
 
 
 def _is_tombstoned(link: Link | None) -> bool:

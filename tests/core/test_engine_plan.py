@@ -8,6 +8,7 @@ from custom_components.halltasker.core.engine import SyncEngine
 from custom_components.halltasker.core.link_store import LinkStore, PairLinks
 from custom_components.halltasker.core.model import (
     CanonicalTask,
+    Capabilities,
     DirectionRule,
     Link,
     Snapshot,
@@ -204,3 +205,99 @@ async def test_equal_unlinked_item_on_missing_side_is_linked_not_created() -> No
     assert result.ok is True
     assert _kinds(result) == [("link", NODE_B)]
     assert result.actions_planned[0].external_id == ext_b
+
+
+def _caps(*, create: bool = True, update: bool = True, delete: bool = True) -> Capabilities:
+    return Capabilities(
+        create=create, update=update, delete=delete, due="datetime", description=True
+    )
+
+
+async def test_create_not_supported_by_target_is_not_planned() -> None:
+    engine, store, plugin = _engine()
+    plugin.caps[NODE_B] = _caps(create=False)
+    plugin.add(NODE_A, TASK)
+    store.mark_pair_initialized(PAIR.id)
+    result = await engine.run_pair(PAIR, dry_run=True)
+    assert _kinds(result) == [("link", NODE_A)]
+    assert result.actions_planned[0].reason == "not propagated to B (not supported by node)"
+
+
+async def test_update_not_supported_by_target_is_not_planned() -> None:
+    engine, store, plugin = _engine()
+    plugin.caps[NODE_B] = _caps(update=False)
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    _link_both_sides(store, TASK, ext_a, ext_b)
+    store.mark_pair_initialized(PAIR.id)
+    plugin.items[NODE_A][ext_a] = CanonicalTask(
+        title="renamed", description="d", due=dt.date(2026, 10, 5)
+    )
+    result = await engine.run_pair(PAIR, dry_run=True)
+    assert _kinds(result) == []
+
+
+async def test_delete_not_supported_by_target_plans_tombstones_only() -> None:
+    engine, store, plugin = _engine()
+    plugin.caps[NODE_B] = _caps(delete=False)
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    _link_both_sides(store, TASK, ext_a, ext_b)
+    store.mark_pair_initialized(PAIR.id)
+    del plugin.items[NODE_A][ext_a]
+    result = await engine.run_pair(PAIR, dry_run=True)
+    assert _kinds(result) == [("tombstone", NODE_A), ("tombstone", NODE_B)]
+    assert all(
+        action.reason == "deleted (not supported by node)" for action in result.actions_planned
+    )
+
+
+async def test_soft_delete_requires_target_update_capability() -> None:
+    engine, store, plugin = _engine()
+    plugin.caps[NODE_B] = _caps(update=False)
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    _link_both_sides(store, TASK, ext_a, ext_b)
+    store.mark_pair_initialized(PAIR.id)
+    del plugin.items[NODE_A][ext_a]
+    pair = SyncPair(id="p", a=NODE_A, b=NODE_B, a_to_b=DirectionRule(delete="soft"))
+    result = await engine.run_pair(pair, dry_run=True)
+    assert _kinds(result) == [("tombstone", NODE_A), ("tombstone", NODE_B)]
+
+
+async def test_conflict_with_unsupported_update_writes_other_side_without_flip_flop() -> None:
+    engine, store, plugin = _engine()
+    plugin.caps[NODE_A] = _caps(update=False)
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    _link_both_sides(store, TASK, ext_a, ext_b)
+    store.mark_pair_initialized(PAIR.id)
+    plugin.items[NODE_A][ext_a] = CanonicalTask(
+        title="from a", description="d", due=dt.date(2026, 10, 5)
+    )
+    plugin.items[NODE_B][ext_b] = CanonicalTask(
+        title="x", description="d", due=dt.date(2026, 10, 7)
+    )
+    first = await engine.run_pair(PAIR, dry_run=False)
+    assert _kinds(first) == [("update", NODE_B)]
+    assert plugin.items[NODE_A][ext_a].due == dt.date(2026, 10, 5)
+    assert plugin.items[NODE_B][ext_b].title == "from a"
+    second = await engine.run_pair(PAIR, dry_run=False)
+    assert _kinds(second) == []
+
+
+async def test_conflict_with_update_forbidden_by_rule_writes_other_side_only() -> None:
+    engine, store, plugin = _engine()
+    ext_a = plugin.add(NODE_A, TASK)
+    ext_b = plugin.add(NODE_B, TASK)
+    _link_both_sides(store, TASK, ext_a, ext_b)
+    store.mark_pair_initialized(PAIR.id)
+    plugin.items[NODE_A][ext_a] = CanonicalTask(
+        title="from a", description="d", due=dt.date(2026, 10, 5)
+    )
+    plugin.items[NODE_B][ext_b] = CanonicalTask(
+        title="x", description="d", due=dt.date(2026, 10, 7)
+    )
+    pair = SyncPair(id="p", a=NODE_A, b=NODE_B, b_to_a=DirectionRule(update=False))
+    result = await engine.run_pair(pair, dry_run=True)
+    assert _kinds(result) == [("update", NODE_B)]

@@ -6,9 +6,9 @@ import datetime as dt
 import re
 from typing import Literal
 
-from .model import CanonicalTask, DirectionRule
+from .model import CanonicalTask, Capabilities, DirectionRule
 
-Operation = Literal["create", "update", "complete"]
+Operation = Literal["create", "update", "complete", "delete", "soft_delete"]
 
 
 def passes_filter(rule: DirectionRule, task: CanonicalTask) -> bool:
@@ -40,8 +40,17 @@ def apply_transform(rule: DirectionRule, task: CanonicalTask, tz: dt.tzinfo) -> 
     )
 
 
-def allows(rule: DirectionRule, op: Operation) -> bool:
-    return getattr(rule, op)
+def allowed(rule: DirectionRule, caps: Capabilities, op: Operation) -> bool:
+    """Whether both the direction rule and target node allow the operation."""
+    if op == "create":
+        return rule.create and caps.create
+    if op == "update":
+        return rule.update and caps.update
+    if op == "complete":
+        return rule.complete and caps.update
+    if op == "delete":
+        return rule.delete == "true" and caps.delete
+    return rule.delete == "soft" and caps.update
 
 
 def op_for_change(changed: frozenset[str]) -> Literal["update", "complete"]:
