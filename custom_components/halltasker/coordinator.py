@@ -164,26 +164,25 @@ class SyncCoordinator:
     @callback
     def _schedule_pairs(self, nodes: Iterable[str], exclude_pair_id: str | None = None) -> None:
         """Debounce-run every enabled pair of these nodes, except the source pair."""
-        for node in nodes:
-            pair_ids = tuple(
-                pair.id
-                for pair in self._pairs.values()
-                if pair.enabled and node in (pair.a, pair.b) and pair.id != exclude_pair_id
-            )
-            if not pair_ids:
+        changed_nodes = frozenset(nodes)
+        for pair in self._pairs.values():
+            if (
+                not pair.enabled
+                or pair.id == exclude_pair_id
+                or not changed_nodes.intersection((pair.a, pair.b))
+            ):
                 continue
-            cancel = self._debounce_cancels.pop(node, None)
+            cancel = self._debounce_cancels.pop(pair.id, None)
             if cancel is not None:
                 cancel()
-            self._debounce_cancels[node] = async_call_later(
-                self._hass, EVENT_DEBOUNCE_SECONDS, self._debounced_run(pair_ids)
+            self._debounce_cancels[pair.id] = async_call_later(
+                self._hass, EVENT_DEBOUNCE_SECONDS, self._debounced_run(pair.id)
             )
 
     @callback
-    def _debounced_run(self, pair_ids: tuple[str, ...]) -> Callable[[datetime], None]:
+    def _debounced_run(self, pair_id: str) -> Callable[[datetime], None]:
         @callback
-        def run_pairs(_now: datetime) -> None:
-            for pair_id in pair_ids:
-                self._hass.async_create_task(self.async_run_pair(pair_id))
+        def run_pair(_now: datetime) -> None:
+            self._hass.async_create_task(self.async_run_pair(pair_id))
 
-        return run_pairs
+        return run_pair

@@ -87,6 +87,24 @@ async def test_state_change_runs_cycle_once_after_debounce(hass: HomeAssistant) 
     await coordinator.async_stop()
 
 
+async def test_state_changes_on_both_nodes_coalesce_into_one_cycle(
+    hass: HomeAssistant,
+) -> None:
+    engine = CountingEngine()
+    coordinator = _coordinator(hass, engine)
+    await coordinator.async_start()
+    start = dt_util.utcnow()
+    hass.states.async_set(NODE_A, "1")
+    hass.states.async_set(NODE_B, "1")
+    await hass.async_block_till_done()
+    assert engine.runs == 0
+
+    async_fire_time_changed(hass, start + dt.timedelta(seconds=EVENT_DEBOUNCE_SECONDS + 1))
+    await hass.async_block_till_done()
+    assert engine.runs == 1
+    await coordinator.async_stop()
+
+
 async def test_concurrent_runs_of_one_pair_are_serialized(hass: HomeAssistant) -> None:
     engine = CountingEngine(delay=0.01)
     coordinator = _coordinator(hass, engine)
