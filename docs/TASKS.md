@@ -277,7 +277,7 @@ Implement `context.accepted` and its application after the action loop (one save
 
 Call `purge_tombstones` at the end of every successful non-dry cycle with `present` built from the two snapshots; save once if something was purged. Tests: store — a tombstone older than 30 days whose item is still present is kept, one whose item is absent is removed, a fresh one is kept; engine — after `delete: false` and a clock advanced by 31 days the Y item is still not re-created and its tombstone link still exists; the deleted X link is gone.
 
-## T-28. Engine: two pairs on a shared node
+## ✅ T-28. Engine: two pairs on a shared node
 
 **Read:** ARCHITECTURE §6 (first paragraph after the class), §6.2 (last paragraph), SPEC FR-12, scenario A10.
 **Files:** `tests/core/test_engine_multi_pair.py` (new), `core/engine.py` (only if a test exposes a defect; describe the fix in `docs/IMPLEMENTATION_NOTES.md`).
