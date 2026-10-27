@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import datetime as dt
 from typing import Any, Literal
 
@@ -69,13 +70,20 @@ class HaTodoPlugin(Plugin):
 
     async def create(self, node: str, task: CanonicalTask, known_ids: frozenset[str]) -> str:
         await self._call("add_item", node, _add_fields(self._features(node), task))
+        expected = replace(task, status="open")
         for attempt in range(_RETRY_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(_RETRY_DELAY_SECONDS)
             items = await self.list(node)
             for uid, candidate in items.items():
-                if uid not in known_ids and candidate == task:
-                    return uid
+                if uid in known_ids or candidate != expected:
+                    continue
+                if task.status == "done":
+                    try:
+                        await self._call("update_item", node, {"item": uid, "status": "completed"})
+                    except NodeUnavailable as err:
+                        raise NodeUnavailable("created item not completed") from err
+                return uid
         raise NodeUnavailable("created item not found")
 
     async def update(
