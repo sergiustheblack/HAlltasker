@@ -2,7 +2,7 @@
 
 Language: [Русский](README.md) | English
 
-Custom integration for Home Assistant: two-way task synchronization between any `todo.*` entities. Through stock HA integrations this links iCloud Reminders (CalDAV), Google Tasks, Yandex Calendar (CalDAV), and local lists.
+Custom integration for Home Assistant: two-way task synchronization between any `todo.*` entities. Through stock HA integrations this links Yandex Calendar (CalDAV), iCloud Reminders (CalDAV), Google Tasks, Local To-do, and Shopping List.
 
 Status: in development, MVP not released.
 
@@ -10,6 +10,7 @@ Status: in development, MVP not released.
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Tasks: [docs/TASKS.md](docs/TASKS.md)
 - Research and constraints of external systems: [docs/RESEARCH.md](docs/RESEARCH.md)
+- Verification of external sources: [docs/LINK_CHECK.md](docs/LINK_CHECK.md)
 
 ## Installation via HACS
 
@@ -24,9 +25,11 @@ The integration ships no dependencies of its own: only stock HA capabilities are
 
 Every external list is connected through a stock HA integration and becomes an ordinary `todo.*` entity. HAlltasker treats them all the same.
 
+To-do lists in the stock CalDAV integration require UI setup: configuring CalDAV through YAML alone does not create `todo.*` entities.
+
 ### Yandex Calendar (experimental)
 
-1. Create an app password: Yandex ID → Security → App passwords → **Calendar** (CalDAV).
+1. Create an app password: Yandex ID → Security → App passwords → **Calendar**.
 2. Add the stock **CalDAV** integration in HA: URL `https://caldav.yandex.ru`, login is the full `LOGIN@yandex.ru` address, password is the app password.
 3. Wait for `todo.*` entities of the to-do lists (`todos-*`) to appear.
 
@@ -55,7 +58,7 @@ Work as ordinary `todo.*` entities. Shopping List has no due date and no descrip
 
 ## Configuration
 
-YAML only, in `configuration.yaml`. In the current build, configuration changes are applied only by restarting HA (`homeassistant.reload_config_entry` does not re-read YAML; the `halltasker.reload` service is in progress).
+YAML only, in `configuration.yaml`. After making changes, call `halltasker.reload` or restart HA: the service re-reads and validates the YAML, and keeps the current working configuration on error. `homeassistant.reload_config_entry` does not re-read YAML.
 
 ```yaml
 halltasker:
@@ -79,9 +82,15 @@ halltasker:
           due: keep                 # keep | date_only | drop
           title_prefix: ""
       b_to_a: {}
+    - id: yandex_to_google
+      a: todo.yandex_dela
+      b: todo.google_tasks_my
+    - id: yandex_to_home
+      a: todo.yandex_dela
+      b: todo.home_list
 ```
 
-Any number of pairs. One entity in several pairs (for example Yandex ↔ iCloud and Yandex ↔ Google) is in progress (architecture v1.1, tasks T-22+) and is not supported in the current build.
+Any number of pairs is allowed. The same entity may belong to several pairs, like `todo.yandex_dela` in the example above. Pairs must not connect the same two nodes twice or form a cycle: the graph of nodes and pairs must be a forest. For example, A↔B and B↔C are allowed, but adding A↔C forms a cycle and is rejected.
 
 ## Services
 
@@ -89,6 +98,7 @@ Any number of pairs. One entity in several pairs (for example Yandex ↔ iCloud 
 |---|---|---|
 | `halltasker.sync_now` | `pair_id` (optional) | Immediate sync cycle of one pair or of all pairs. |
 | `halltasker.dry_run` | `pair_id` (optional) | Returns the planned actions without writing (service response: `{"pairs": {pair_id: [actions]}}`). |
+| `halltasker.reload` | none (admin service) | Re-reads and validates YAML, then restarts the integration with the new configuration. |
 
 ## Sensors
 
@@ -103,11 +113,13 @@ One `sensor.halltasker_<pair_id>` per pair:
 - The conflict policy is per pair: `prefer_a` or `prefer_b`. Changes to different fields on both sides are merged; tasks in HA expose no modification time, so true last-write-wins is impossible.
 - Deletion: `true` — delete on the other side; `soft` — mark it done; `false` — leave it alone and never re-create. The memory of deletions (tombstones) is kept for at least 30 days.
 - A repeated cycle with no external changes performs no writes at all.
+- Chained runs carry a change across a shared node within seconds, while external integrations such as CalDAV still add their own refresh delay.
 
 ## Limitations
 
 - Recurring tasks (RRULE), subtasks, attachments, tags, priorities are not supported.
 - Google Tasks: date only, no time of day.
 - CalDAV integrations refresh roughly every 15 minutes.
+- A pair cycle is limited to 120 seconds; exceeding it is an error of that pair, while other pairs continue to run.
 - No UI configuration; YAML is the source of truth.
 - Diagnostics (downloaded from the integration page) contain no secrets by construction.
