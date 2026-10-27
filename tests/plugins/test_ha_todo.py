@@ -6,11 +6,16 @@ import datetime as dt
 from typing import Any
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 import pytest
 
-from custom_components.halltasker.core.model import CanonicalTask
+from custom_components.halltasker.core.engine import SyncEngine
+from custom_components.halltasker.core.link_store import LinkStore
+from custom_components.halltasker.core.model import CanonicalTask, SyncPair
 from custom_components.halltasker.plugins.base import NodeUnavailable
 from custom_components.halltasker.plugins.ha_todo import HaTodoPlugin
+from custom_components.halltasker.plugins.registry import PluginRegistry
+from tests.core.fakes import FakePlugin, FakeStorage
 
 NODE = "todo.list_a"
 ALL_FEATURES = 127
@@ -25,6 +30,7 @@ class FakeTodoBackend:
     def __init__(self) -> None:
         self.items: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.fail_update = False
         self._next_uid = 0
 
     async def get_items(self, call: ServiceCall) -> dict[str, Any]:
@@ -46,6 +52,8 @@ class FakeTodoBackend:
         self.items.append(item)
 
     async def update_item(self, call: ServiceCall) -> None:
+        if self.fail_update:
+            raise HomeAssistantError("update failed")
         self.update_calls.append(dict(call.data))
         for item in self.items:
             if item["uid"] != call.data["item"]:
@@ -164,6 +172,37 @@ async def test_create_finds_uid_by_content(hass, plugin, backend) -> None:
     uid = await plugin.create(NODE, task, frozenset({"known"}))
     assert uid != "known"
     assert backend.items[-1]["summary"] == "fresh"
+
+
+async def test_create_done_converges_in_one_engine_cycle(hass, plugin, backend) -> None:
+    _set_entity(hass)
+    source = FakePlugin()
+    source.add("fake.source", CanonicalTask(title="done", status="done"))
+    pair = SyncPair(id="p", a="fake.source", b=NODE)
+    store = LinkStore(FakeStorage()).for_pair(pair)
+    registry = PluginRegistry()
+    registry.register(source)
+    registry.register(plugin)
+    engine = SyncEngine(
+        store,
+        registry,
+        clock=lambda: dt.datetime(2026, 10, 28, 12, 0, tzinfo=MSK),
+    )
+
+    result = await engine.run_pair(pair, dry_run=False)
+    assert result.ok is True
+    assert result.actions_failed == []
+    assert len(backend.items) == 1
+    assert backend.items[0]["status"] == "completed"
+    assert backend.update_calls[-1]["status"] == "completed"
+
+
+async def test_create_done_reports_failed_completion(hass, plugin, backend) -> None:
+    _set_entity(hass)
+    backend.fail_update = True
+    with pytest.raises(NodeUnavailable, match="created item not completed"):
+        await plugin.create(NODE, CanonicalTask(title="done", status="done"), frozenset())
+    assert backend.items[0]["status"] == "needs_action"
 
 
 async def test_unavailable_entity_raises_node_unavailable(hass, plugin) -> None:
