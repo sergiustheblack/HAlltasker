@@ -11,10 +11,10 @@ from ..plugins.registry import PluginRegistry
 from .actions import Action, RunResult
 from .conflict import merge
 from .diff import SideState, classify
-from .downgrade import downgrade
+from .downgrade import downgrade, equivalent
 from .link_store import PairLinks
 from .matching import find_match, pair_up
-from .model import CanonicalTask, Capabilities, DirectionRule, Link, Snapshot, SyncPair
+from .model import FIELDS, CanonicalTask, Capabilities, DirectionRule, Link, Snapshot, SyncPair
 from .router import Operation, allowed, apply_transform, op_for_change, passes_filter
 
 _RULE_ONLY_CAPS = Capabilities(
@@ -308,11 +308,11 @@ class SyncEngine:
             )
         if state_a.kind == "missing_link":
             return self._plan_missing(
-                pair, canonical_id, pair.a, state_b, link_b, tz, new_a, caps_a, caps_b
+                pair, canonical_id, pair.a, state_b, link_b, tz, new_a, caps_a, caps_b, context
             )
         if state_b.kind == "missing_link":
             return self._plan_missing(
-                pair, canonical_id, pair.b, state_a, link_a, tz, new_b, caps_b, caps_a
+                pair, canonical_id, pair.b, state_a, link_a, tz, new_b, caps_b, caps_a, context
             )
         if state_a.kind == "changed" and state_b.kind == "changed":
             actions = self._plan_conflict(
@@ -516,14 +516,16 @@ class SyncEngine:
         new_missing: dict[str, CanonicalTask],
         caps_missing: Capabilities,
         caps_present: Capabilities,
+        context: _CycleContext,
     ) -> list[Action]:
         rule = pair.b_to_a if missing_node == pair.a else pair.a_to_b
         if present_state.current is None or present_link is None:
             return []
-        orphan = find_match(present_state.current, new_missing, caps_present, caps_missing, tz)
+        expected = apply_transform(rule, present_state.current, tz)
+        orphan = find_match(expected, new_missing, caps_present, caps_missing, tz)
         if orphan is not None:
-            del new_missing[orphan]
-            return [
+            orphan_current = new_missing.pop(orphan)
+            actions = [
                 Action(
                     kind="link",
                     node=missing_node,
@@ -532,13 +534,35 @@ class SyncEngine:
                     reason="orphan matched",
                 )
             ]
+            if not equivalent(orphan_current, expected, caps_missing, tz):
+                downgraded = downgrade(expected, caps_missing, tz)
+                changed = frozenset(
+                    field
+                    for field in FIELDS
+                    if getattr(downgraded, field) != getattr(orphan_current, field)
+                )
+                operation = op_for_change(changed)
+                if changed and allowed(rule, caps_missing, operation):
+                    actions.append(
+                        Action(
+                            kind=operation,
+                            node=missing_node,
+                            canonical_id=canonical_id,
+                            task=expected,
+                            external_id=orphan,
+                            changed=changed,
+                            reason="orphan differs",
+                        )
+                    )
+            _accept_locally(actions, context, (present_link, present_state))
+            return actions
         if allowed(rule, caps_missing, "create") and passes_filter(rule, present_state.current):
             return [
                 Action(
                     kind="create",
                     node=missing_node,
                     canonical_id=canonical_id,
-                    task=apply_transform(rule, present_state.current, tz),
+                    task=expected,
                     reason="created on the other side",
                 )
             ]
