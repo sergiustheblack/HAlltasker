@@ -291,7 +291,7 @@ One `LinkStore`, one `FakePlugin` with three nodes A, B, C, two engines built wi
 
 Register `reload` in `async_setup` with `async_register_admin_service` exactly as in §7; import `async_integration_yaml_config` by name into `__init__.py`. Tests: patch `custom_components.halltasker.async_integration_yaml_config` to return a config with a second pair → after the service call `coordinator.pairs` has two pairs and the old coordinator is stopped; patch it to return `None` → an error in `caplog`, pairs unchanged, the integration still loaded.
 
-## T-30. End-to-end tests with an in-memory todo platform
+## ✅ T-30. End-to-end tests with an in-memory todo platform
 
 **Read:** ARCHITECTURE §12 (the `tests/todo_platform.py` bullet and the two bullets after it), §4.
 **Files:** `tests/todo_platform.py` (new), `tests/test_e2e.py` (new).
