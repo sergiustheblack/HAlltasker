@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import datetime as dt
 
-from custom_components.halltasker.core.model import CanonicalTask, DirectionRule, Filter, Transform
+from custom_components.halltasker.core.model import (
+    CanonicalTask,
+    Capabilities,
+    DirectionRule,
+    Filter,
+    Transform,
+)
 from custom_components.halltasker.core.router import (
-    allows,
+    allowed,
     apply_transform,
     op_for_change,
     passes_filter,
@@ -60,11 +66,22 @@ def test_title_prefix_added_once() -> None:
     assert apply_transform(rule, prefixed, MSK).title == "sync: buy milk"
 
 
-def test_allows_reflects_rule_flags() -> None:
-    rule = _rule(create=False, complete=False)
-    assert allows(rule, "create") is False
-    assert allows(rule, "update") is True
-    assert allows(rule, "complete") is False
+def test_allowed_combines_rule_flags_and_capabilities() -> None:
+    rule = _rule(create=False, complete=False, delete="soft")
+    caps = Capabilities(create=True, update=False, delete=True, due="datetime", description=True)
+    assert allowed(rule, caps, "create") is False
+    assert allowed(rule, caps, "update") is False
+    assert allowed(rule, caps, "complete") is False
+    assert allowed(rule, caps, "delete") is False
+    assert allowed(rule, caps, "soft_delete") is False
+
+
+def test_allowed_uses_update_capability_for_complete_and_soft_delete() -> None:
+    rule = _rule(delete="soft")
+    caps = Capabilities(create=False, update=True, delete=False, due="datetime", description=False)
+    assert allowed(rule, caps, "complete") is True
+    assert allowed(rule, caps, "soft_delete") is True
+    assert allowed(rule, caps, "delete") is False
 
 
 def test_op_for_change_status_only_is_complete() -> None:
