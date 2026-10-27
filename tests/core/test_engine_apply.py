@@ -37,6 +37,35 @@ class FailingCreatePlugin(FakePlugin):
         raise RuntimeError("create failed")
 
 
+class FailOnceDeletePlugin(FakePlugin):
+    async def delete(self, node: str, external_id: str) -> None:
+        if not hasattr(self, "delete_failed"):
+            self.delete_failed = True
+            raise RuntimeError("delete failed")
+        await super().delete(node, external_id)
+
+
+class FailOnceUpdatePlugin(FakePlugin):
+    fail_next_update = False
+
+    async def update(
+        self,
+        node: str,
+        external_id: str,
+        task: CanonicalTask,
+        changed: frozenset[str],
+    ) -> None:
+        if self.fail_next_update:
+            self.fail_next_update = False
+            raise RuntimeError("update failed")
+        await super().update(node, external_id, task, changed)
+
+
+class FailingStorage(FakeStorage):
+    async def async_save(self, data: dict) -> None:
+        raise RuntimeError("storage failed")
+
+
 def _engine(plugin: FakePlugin | None = None):
     storage = FakeStorage()
     store = LinkStore(storage).for_pair(PAIR)
@@ -82,9 +111,11 @@ async def test_a2_rename_in_b_changes_in_a_and_repeat_cycle_writes_nothing() -> 
     plugin.items[NODE_B][ext_b] = CanonicalTask(
         title="renamed", description="d", due=dt.date(2026, 10, 5)
     )
+    saves_before = storage.saves
     result = await engine.run_pair(PAIR, dry_run=False)
     assert result.ok is True
     assert _only(plugin.items[NODE_A]).title == "renamed"
+    assert storage.saves == saves_before + 1
 
     saves_before = storage.saves
     first_repeat = await engine.run_pair(PAIR, dry_run=False)
@@ -380,3 +411,68 @@ async def test_tombstone_purge_keeps_live_item_and_drops_gone_one() -> None:
     remaining = store.links_of(canonical_id)
     assert set(remaining) == {NODE_B}  # the gone X link is purged, the live Y kept
     assert remaining[NODE_B].tombstone is True
+
+
+async def test_failed_delete_skips_tombstones_and_retries_next_cycle() -> None:
+    engine, store, _storage, plugin = _engine(FailOnceDeletePlugin())
+    await _seed_linked(plugin, engine)
+    ext_a = next(iter(plugin.items[NODE_A]))
+    del plugin.items[NODE_A][ext_a]
+
+    first = await engine.run_pair(PAIR, dry_run=False)
+    assert [action.kind for action, _error in first.actions_failed] == ["delete"]
+    assert _only(plugin.items[NODE_B]) == TASK
+    assert not any(
+        link.tombstone
+        for links in store.links_for_pair(NODE_A, NODE_B).values()
+        for link in links.values()
+    )
+
+    second = await engine.run_pair(PAIR, dry_run=False)
+    assert [action.kind for action in second.actions_applied] == [
+        "delete",
+        "tombstone",
+        "tombstone",
+    ]
+    assert plugin.items[NODE_B] == {}
+
+
+async def test_failed_soft_delete_skips_tombstones_and_retries_next_cycle() -> None:
+    engine, store, _storage, plugin = _engine(FailOnceUpdatePlugin())
+    await _seed_linked(plugin, engine)
+    pair = SyncPair(id="p", a=NODE_A, b=NODE_B, a_to_b=DirectionRule(delete="soft"))
+    ext_a = next(iter(plugin.items[NODE_A]))
+    del plugin.items[NODE_A][ext_a]
+    plugin.fail_next_update = True
+
+    first = await engine.run_pair(pair, dry_run=False)
+    assert [action.kind for action, _error in first.actions_failed] == ["soft_delete"]
+    assert _only(plugin.items[NODE_B]).status == "open"
+    assert not any(
+        link.tombstone
+        for links in store.links_for_pair(NODE_A, NODE_B).values()
+        for link in links.values()
+    )
+
+    second = await engine.run_pair(pair, dry_run=False)
+    assert [action.kind for action in second.actions_applied] == [
+        "soft_delete",
+        "tombstone",
+        "tombstone",
+    ]
+    assert _only(plugin.items[NODE_B]).status == "done"
+
+
+async def test_storage_save_error_returns_failed_result() -> None:
+    store = LinkStore(FailingStorage()).for_pair(PAIR)
+    plugin = FakePlugin()
+    plugin.caps[NODE_A] = FULL_CAPS
+    plugin.caps[NODE_B] = FULL_CAPS
+    registry = PluginRegistry()
+    registry.register(plugin)
+    engine = SyncEngine(store, registry, clock=lambda: NOW)
+    plugin.add(NODE_A, TASK)
+
+    result = await engine.run_pair(PAIR, dry_run=False)
+    assert result.ok is False
+    assert result.error == "RuntimeError: storage failed"
