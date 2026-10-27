@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import datetime as dt
 
 from custom_components.halltasker.core.engine import SyncEngine
@@ -13,6 +14,7 @@ from custom_components.halltasker.core.model import (
     Link,
     Snapshot,
     SyncPair,
+    Transform,
 )
 from custom_components.halltasker.plugins.base import NodeUnavailable
 from custom_components.halltasker.plugins.registry import PluginRegistry
@@ -291,7 +293,7 @@ class WriteThenFailCreatePlugin(FakePlugin):
     """Writes the item but fails the uid lookup, like a lagging todo backend."""
 
     async def create(self, node: str, task: CanonicalTask, known_ids: frozenset[str]) -> str:
-        await super().create(node, task, known_ids)
+        await super().create(node, replace(task, status="open"), known_ids)
         raise NodeUnavailable("created item not found")
 
 
@@ -309,6 +311,63 @@ async def test_a12_orphan_from_failed_uid_lookup_is_linked_not_duplicated() -> N
     assert len(plugin.items[NODE_A]) == 1
     assert len(plugin.items[NODE_B]) == 1
     assert second.links == 2
+
+    third = await engine.run_pair(PAIR, dry_run=False)
+    assert third.actions_applied == []
+
+
+async def test_a12_orphan_matching_uses_title_prefix_transform() -> None:
+    engine, _store, _storage, plugin = _engine(WriteThenFailCreatePlugin())
+    pair = SyncPair(
+        id="p",
+        a=NODE_A,
+        b=NODE_B,
+        a_to_b=DirectionRule(transform=Transform(title_prefix="P:")),
+    )
+    plugin.add(NODE_A, TASK)
+
+    await engine.run_pair(pair, dry_run=False)
+    second = await engine.run_pair(pair, dry_run=False)
+    assert [(a.kind, a.node) for a in second.actions_applied] == [("link", NODE_B)]
+    assert [task.title for task in plugin.items[NODE_A].values()] == ["x"]
+    assert [task.title for task in plugin.items[NODE_B].values()] == ["P:x"]
+
+
+async def test_a12_orphan_matching_uses_due_transform() -> None:
+    engine, _store, _storage, plugin = _engine(WriteThenFailCreatePlugin())
+    pair = SyncPair(
+        id="p",
+        a=NODE_A,
+        b=NODE_B,
+        a_to_b=DirectionRule(transform=Transform(due="date_only")),
+    )
+    plugin.add(
+        NODE_A,
+        CanonicalTask(title="x", due=dt.datetime(2026, 10, 5, 23, 30, tzinfo=MSK)),
+    )
+
+    await engine.run_pair(pair, dry_run=False)
+    second = await engine.run_pair(pair, dry_run=False)
+    assert [(a.kind, a.node) for a in second.actions_applied] == [("link", NODE_B)]
+    assert len(plugin.items[NODE_A]) == 1
+    assert len(plugin.items[NODE_B]) == 1
+    assert _only(plugin.items[NODE_B]).due == dt.date(2026, 10, 5)
+
+
+async def test_open_orphan_of_done_source_is_completed() -> None:
+    engine, _store, _storage, plugin = _engine(WriteThenFailCreatePlugin())
+    plugin.add(NODE_A, CanonicalTask(title="x", status="done"))
+
+    await engine.run_pair(PAIR, dry_run=False)
+    second = await engine.run_pair(PAIR, dry_run=False)
+    assert [(a.kind, a.node) for a in second.actions_applied] == [
+        ("link", NODE_B),
+        ("complete", NODE_B),
+    ]
+    assert second.actions_applied[1].reason == "orphan differs"
+    assert len(plugin.items[NODE_A]) == 1
+    assert len(plugin.items[NODE_B]) == 1
+    assert _only(plugin.items[NODE_B]).status == "done"
 
     third = await engine.run_pair(PAIR, dry_run=False)
     assert third.actions_applied == []
