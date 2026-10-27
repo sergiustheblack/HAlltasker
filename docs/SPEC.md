@@ -1,6 +1,6 @@
-# HAlltasker — technical specification (v1.1, 2026-10-26)
+# HAlltasker — technical specification (v1.2, 2026-10-28)
 
-Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9.
+Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9, against v1.1 in §10.
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/SPEC.md](ru/SPEC.md); if they differ, this file wins.
 
@@ -13,7 +13,7 @@ Two-way synchronization of tasks and reminders between ecosystems (Yandex Alice,
 | Question | Decision |
 |---|---|
 | Platform, language | HA custom integration, Python 3.14+, stable HA 2026.9.x |
-| Responsibility boundary | The core contains no authorization and no private APIs of external systems. The only data source in the MVP is the HA `todo.*` entities created by other integrations |
+| Responsibility boundary | The core contains no authorization and no private APIs of external systems. The only data source in the MVP is the HA `todo.*` entities created by other integrations. Beyond the MVP (decision of 2026-10-28, IT-41): if a stock or community HA integration exposes the system and satisfies the scenario, HAlltasker uses it through a plugin and adds no client of its own; only if no such integration exists may a plugin carry its own API client, with credentials in YAML via `!secret` and never in the core |
 | Apple Reminders | Through the stock HA CalDAV integration to iCloud (`caldav.icloud.com`) |
 | Google Tasks | Through the stock HA Google Tasks integration |
 | Yandex | Through the stock HA CalDAV to `caldav.yandex.ru` (Calendar to-do items (дело)). Status: **experimental**, confirmed by stage 0 (see `docs/RESEARCH.md`). Alice reminders with an exact time are a separate experimental scenario; if needed, the source is added by an external PR to YandexStation, not to this core |
@@ -41,7 +41,7 @@ Included:
 Not included:
 
 - RRULE, subtasks, attachments, tags, priorities, geo-reminders, item ordering.
-- Notes, calendar events, task trackers, shopping list. The architecture leaves room for them as future plugins.
+- Notes, calendar events, task trackers, shopping list. The architecture leaves room for them as future plugins (`docs/ARCHITECTURE.md` §13). Calendar events are a low-priority idea only (decision of 2026-10-28).
 - Configuration UI, suppression of duplicate notifications, own clients for external APIs.
 
 ## 4. Terms
@@ -213,3 +213,10 @@ Source: the initial acceptance of the T-01…T-21 implementation (`docs/IMPLEMEN
 - §7 A10–A12: acceptance scenarios for the above.
 - §8: corrected probatio/voluptuous facts.
 - From the implementer's review of v1.1: FR-9.4 cycle timeout (Q-2), FR-10.4 redaction of task texts in diagnostics (Q-3), FR-12.6 chained runs across a shared node, FR-8.4 known limitation of orphan matching.
+
+## 10. Changes in v1.2 (2026-10-28)
+
+Source: architecture review IT-41 (extension beyond `todo.*`), owner's decisions of 2026-10-28. No requirement of v1.1 was withdrawn; the MVP scope is unchanged.
+
+- §2 Responsibility boundary: after the MVP a plugin may carry its own API client when no stock or community HA integration covers the system; a suitable integration always wins. Credentials stay in YAML via `!secret`.
+- §3: calendar events are kept as a low-priority idea; task trackers and shopping lists remain future plugins under the new §2 rule.
