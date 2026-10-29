@@ -9,7 +9,6 @@ from homeassistant.components.todo.const import TodoListEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-import pytest
 
 from custom_components.halltasker.const import DOMAIN
 
@@ -218,7 +217,6 @@ async def _uid(hass: HomeAssistant, entity_id: str, summary: str) -> str:
     return next(item["uid"] for item in await _items(hass, entity_id) if item["summary"] == summary)
 
 
-@pytest.mark.xfail(reason="IT-47: stale last_written misclassifies the revert as echo")
 async def test_a3_reopen_after_engine_write_to_same_side_reaches_b(hass) -> None:
     # Mirrors the IT-44 manual run: the engine wrote the title to A, so A's
     # last_written holds the open task; completing and reopening A must not

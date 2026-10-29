@@ -165,8 +165,7 @@ class SyncEngine:
         for link, snapshot in context.echo_updates:
             link.last_observed = snapshot
         for link, snapshot in context.accepted:
-            link.last_observed = snapshot
-            link.last_synced = snapshot
+            self._adopt(link, snapshot, context.caps[link.node], context.tz)
         return applied, failed
 
     async def _apply(self, action: Action, context: _CycleContext, now: str) -> None:
@@ -257,6 +256,15 @@ class SyncEngine:
         link.last_synced = Snapshot.of(synced)
         link.last_seen_at = now
 
+    def _adopt(self, link: Link, snapshot: Snapshot, caps: Capabilities, tz: dt.tzinfo) -> None:
+        """Adopt a synced state not produced by a write on this link."""
+        link.last_observed = snapshot
+        link.last_synced = snapshot
+        if link.last_written is not None and not equivalent(
+            snapshot.task(), link.last_written.task(), caps, tz
+        ):
+            link.last_written = None
+
     def _refresh_source(self, action: Action, context: _CycleContext, now: str) -> None:
         """Record the consumed change on the opposite side of the same canonical task."""
         for link in self._store.links_of(action.canonical_id).values():
@@ -267,9 +275,7 @@ class SyncEngine:
             current = context.snaps.get(link.node, {}).get(link.external_id)
             if current is None:
                 continue
-            snapshot = Snapshot.of(current)
-            link.last_observed = snapshot
-            link.last_synced = snapshot
+            self._adopt(link, Snapshot.of(current), context.caps[link.node], context.tz)
             link.last_seen_at = now
 
     def _entomb(self, node: str, canonical_id: str, external_id: str, now: str) -> None:
