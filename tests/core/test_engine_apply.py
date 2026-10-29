@@ -426,6 +426,27 @@ async def test_a11_blocked_change_is_accepted_locally_and_does_not_leak() -> Non
     assert _only(plugin.items[NODE_B]).title == "x"
 
 
+async def test_reopen_after_cross_write_and_refresh_is_propagated() -> None:
+    """IT-47: a revert to a stale last_written state must classify as changed, not echo."""
+    engine, _store, _storage, plugin = _engine()
+    ext_a = plugin.add(NODE_A, TASK)
+
+    await engine.run_pair(PAIR, dry_run=False)  # link A, create B
+    ext_b = next(iter(plugin.items[NODE_B]))
+    plugin.items[NODE_B][ext_b] = replace(TASK, title="engine-written")
+    await engine.run_pair(PAIR, dry_run=False)  # update on A: A.last_written = open task
+    plugin.items[NODE_A][ext_a] = replace(TASK, title="engine-written", status="done")
+    await engine.run_pair(PAIR, dry_run=False)  # complete on B, refresh A to done
+
+    plugin.items[NODE_A][ext_a] = replace(TASK, title="engine-written")
+    reopened = await engine.run_pair(PAIR, dry_run=False)
+
+    assert [(a.kind, a.node) for a in reopened.actions_applied] == [("complete", NODE_B)]
+    assert _only(plugin.items[NODE_B]).status == "open"
+    settled = await engine.run_pair(PAIR, dry_run=False)
+    assert settled.actions_applied == []
+
+
 async def test_tombstone_purge_keeps_live_item_and_drops_gone_one() -> None:
     pair = SyncPair(id="p", a=NODE_A, b=NODE_B, a_to_b=DirectionRule(delete="false"))
     storage = FakeStorage()
