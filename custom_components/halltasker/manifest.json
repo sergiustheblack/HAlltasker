@@ -4,10 +4,10 @@
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["todo"],
-  "documentation": "https://github.com/s-parfyenov/HAlltasker",
+  "documentation": "https://github.com/sergiustheblack/HAlltasker",
   "integration_type": "service",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/s-parfyenov/HAlltasker/issues",
+  "issue_tracker": "https://github.com/sergiustheblack/HAlltasker/issues",
   "requirements": [],
   "version": "0.1.0"
 }
