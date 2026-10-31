@@ -144,7 +144,14 @@ Neither VTODO contains `DTSTAMP`. No matching VEVENT was found. The reminder tim
 
 **Supplement: native Yandex completion.** A manually created VTODO (`UID:523PFmF5yandex.ru`) initially had `DUE;VALUE=DATE:20261031` and no STATUS; HA exposed it as `needs_action`. Closing it in Yandex Calendar added only `COMPLETED:20261031T204636Z` and changed the ETag from `1793479427741` to `1793479596610`; it did not add `STATUS:COMPLETED`. Stock HA CalDAV continued to return the item as `needs_action`, and its completed query remained empty. Native Yandex completion is therefore invisible to HAlltasker through the stock todo API. Tracked as IT-48.
 
-**Step 5: private reminders API (2026-11-01).** A one-off script in the HA container used the existing YandexStation session without printing its credentials and sent POST `https://rpc.alice.yandex.ru/gproxy/get_reminders` with `ALARM_HEADERS` and no request body. The response was HTTP 200:
+**Step 5: private reminders API (2026-11-01).** A one-off script in the HA container reused the third-party YandexStation integration through these imports:
+
+```python
+from custom_components.yandex_station.core.yandex_quasar import ALARM_HEADERS
+from custom_components.yandex_station.core.yandex_session import YandexSession
+```
+
+The script loaded the existing YandexStation config-entry data without printing credentials, constructed `YandexSession` from it, called `refresh_cookies()`, and sent POST `https://rpc.alice.yandex.ru/gproxy/get_reminders` with the integration's `ALARM_HEADERS` and no request body. HAlltasker did not perform Yandex authentication or store cookies itself. The УД reminders adapter should therefore be planned around YandexStation as its session-provider dependency rather than duplicating Yandex authentication. The response was HTTP 200:
 
 ```json
 {"reminders":[{"id":"7e5e294d-980e-0adc-c299-eba7e0c914dc","text":"Тест ручной","trigger_policy":{"single_trigger_policy":{"datetime":"2026-10-31T21:05:00"}},"play_settings":{"send_push":{"state":"Disabled"},"play_location":{"selected_devices":{"selected_device_ids":["R103BE300ZXT2T"]}}}}]}
