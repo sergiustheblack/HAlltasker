@@ -1,6 +1,6 @@
-# HAlltasker — technical specification (v1.2, 2026-10-28)
+# HAlltasker — technical specification (v1.3, 2026-11-01)
 
-Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9, against v1.1 in §10.
+Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9, against v1.1 in §10, against v1.2 in §11.
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/SPEC.md](ru/SPEC.md); if they differ, this file wins.
 
@@ -13,10 +13,10 @@ Two-way synchronization of tasks and reminders between ecosystems (Yandex Alice,
 | Question | Decision |
 |---|---|
 | Platform, language | HA custom integration, Python 3.14+, stable HA 2026.9.x |
-| Responsibility boundary | The core contains no authorization and no private APIs of external systems. The only data source in the MVP is the HA `todo.*` entities created by other integrations. Beyond the MVP (decision of 2026-10-28, IT-41): if a stock or community HA integration exposes the system and satisfies the scenario, HAlltasker uses it through a plugin and adds no client of its own; only if no such integration exists may a plugin carry its own API client, with credentials in YAML via `!secret` and never in the core |
+| Responsibility boundary | The core contains no authorization and no private APIs of external systems. The only data source in the MVP is the HA `todo.*` entities, created by other integrations or by HAlltasker's own CalDAV `todo` platform (FR-13). Beyond the MVP (decision of 2026-10-28, IT-41): if a stock or community HA integration exposes the system and satisfies the scenario, HAlltasker uses it through a plugin and adds no client of its own; only if no such integration exists may a plugin carry its own API client, with credentials in YAML via `!secret` and never in the core |
 | Apple Reminders | Through the stock HA CalDAV integration to iCloud (`caldav.icloud.com`) |
 | Google Tasks | Through the stock HA Google Tasks integration |
-| Yandex | Through the stock HA CalDAV to `caldav.yandex.ru` (Calendar to-do items (дело)). Status: **experimental**, confirmed by stage 0 (see `docs/RESEARCH.md`). Alice reminders with an exact time are a separate experimental scenario; if needed, the source is added by an external PR to YandexStation, not to this core |
+| Yandex | Through HAlltasker's own CalDAV `todo` platform (FR-13) against `caldav.yandex.ru` (Calendar to-do items (дело)); the code is adapted from HA core `caldav`. The stock HA CalDAV integration is not used for Yandex: it does not see completion made in Yandex Calendar (RESEARCH §1, IT-48) and exposes every collection, while Alice adds items only to «Мои дела». Stage 0 (RESEARCH §4): Alice reminders with a time do not reach CalDAV; they stay a separate scenario via YandexStation, not this core |
 | Configuration | **YAML only** (`configuration.yaml`). Config/options flow in the UI is out of the MVP. Technical detail: an import flow creates one ConfigEntry from YAML for reload and diagnostics |
 | Conflicts | Policy per pair: `prefer_a` (default) or `prefer_b`. Fields changed on one side only are merged. True last-write-wins is impossible: HA does not expose task modification times |
 | Routing | Node pairs A↔B; each pair has rules for the A→B and B→A directions. A node may take part in several pairs (FR-12); the pairs must not form a cycle |
@@ -32,6 +32,7 @@ Included:
 
 - Canonical task: `title`, `description`, `status` (open/done), `due` (none, a date, or a date+time with time zone), `extensions`.
 - One plugin `ha_todo`: any `todo.*` entity as a node. Covers CalDAV (iCloud, Yandex), Google Tasks, Local To-do, Shopping List, and future integrations with no new code.
+- Own `todo` platform for CalDAV (FR-13): selected VTODO collections of a CalDAV account become `todo.*` entities with RFC 5545 completion semantics. Required for Yandex; usable with any CalDAV server.
 - Node pairs with per-direction rules: allowed operations, filters, transforms.
 - Internal storage of links and tombstones in `.storage/halltasker`.
 - Initial sync in the modes `merge` (default) and `dry_run`.
@@ -149,13 +150,23 @@ The full schema is in `docs/ARCHITECTURE.md` §7. On a schema error the integrat
 5. If an existing pair id is pointed at other nodes, its stored links are discarded with a warning in the log, and the next cycle of this pair is an initial sync (FR-8).
 6. After a pair has written into a node, the other pairs that contain this node are run out of schedule (with the FR-9.2 delay), so a change crosses several pairs within seconds rather than one polling interval per pair.
 
+### FR-13 CalDAV `todo` platform
+
+1. The `halltasker:` YAML section may hold `caldav:` — a list of CalDAV accounts (`id`, `url`, `username`, `password`, `verify_ssl`, `interval`), each with `lists`: the VTODO collections to expose, selected by `id` plus exactly one of `name` (collection displayname) or `href` (collection path). Credentials come from YAML via `!secret`; HAlltasker stores no credentials of its own.
+2. Each selected list becomes one `todo.*` entity of HAlltasker: `todo.halltasker_<list id>`. Collections that are not listed are not exposed. A listed collection that is missing on the server is logged once as an error; the entity exists but is `unavailable`.
+3. The entity supports create, update, delete, due date, due datetime and description (`supported_features` 119, no MOVE), exactly like the stock CalDAV todo entity, so the `ha_todo` plugin and the core need no change.
+4. Completion is read per RFC 5545: `STATUS` `COMPLETED`/`CANCELLED` → `completed`; without `STATUS`, a present `COMPLETED` property or `PERCENT-COMPLETE:100` → `completed`; otherwise `needs_action`. Completion from HA writes `STATUS:COMPLETED`, `PERCENT-COMPLETE:100` and `COMPLETED:<now UTC>` (kept if already present); reopening writes `STATUS:NEEDS-ACTION` and removes `COMPLETED` and `PERCENT-COMPLETE`.
+5. A VTODO without `DTSTAMP` (Yandex) is accepted on read and gets `DTSTAMP` on write.
+6. The list is refreshed every `interval` seconds (default 300, minimum 60) and immediately after every write made through the entity. A failed refresh makes the entity `unavailable` until the next successful one; a pair then sees `NodeUnavailable` (FR-1.5).
+7. The platform is a thin adaptation of HA core `caldav` (`todo.py`, `api.py`), kept in this repository without the calendar platform and without the config flow. It uses the `caldav` library pinned to the version of the pinned HA core.
+
 ## 6. Non-functional requirements
 
 1. Code follows HA core standards: asyncio, type annotations, `ruff` with no findings, configuration in `pyproject.toml`.
 2. Tests: `pytest` + `pytest-homeassistant-custom-component`. The core (`core/`) is tested without HA. The `ha_todo` plugin is tested with substituted services. In addition, end-to-end tests run the real `todo.*` services of HA against an in-memory `todo` platform defined inside `tests/`. Core coverage is not below 90 %.
 3. Logs: `INFO` one line per pair cycle with counters, `DEBUG` action details, `WARNING` for node errors. Task content appears in logs only at `DEBUG`.
 4. HACS: `hacs.json` and `manifest.json` with a version; they pass `hassfest` and `hacs/action`.
-5. External dependencies: only what already exists in HA. New packages in the manifest `requirements` are forbidden for the MVP.
+5. External dependencies: only what already exists in HA, plus the CalDAV libraries of FR-13.7 (`caldav`, `icalendar`, `vobject`) pinned to the exact versions of the HA core `caldav` manifest for the pinned HA release. No other package in the manifest `requirements`.
 
 ## 7. Acceptance scenarios
 
@@ -185,15 +196,16 @@ Environment: two `local_todo` entities in a test HA.
 
 ### C. Yandex (experimental, depends on the stage 0 results)
 
-1. Pair Yandex CalDAV `todos-*` ↔ `local_todo`: «Алиса, добавь в список дел на сегодня помыть полы» (Alice, add "wash the floors" to today's to-do list) → a task with `due` set to today appears in `local_todo` no later than two CalDAV intervals (~30 min).
+1. Pair `todo.halltasker_moi_dela` (FR-13, Yandex list «Мои дела») ↔ `local_todo`: «Алиса, добавь в список дел на сегодня помыть полы» (Alice, add "wash the floors" to today's to-do list) → a task with `due` set to today appears in `local_todo` no later than two list intervals (FR-13.6).
 2. Voice reminder with a time: «Алиса, напомни сегодня в 19:00 помыть полы» (Alice, remind me today at 19:00 to wash the floors) → check whether it reaches CalDAV with the time. The result is recorded in `docs/RESEARCH.md`. Failing this scenario does not block the MVP release.
+3. Completion both ways through FR-13: close an item in Yandex Calendar → `done` in `local_todo` within one list interval; close in `local_todo` → the item is shown as done in Yandex Calendar and Alice no longer reads it out. Reopen on either side → `open` on the other.
 
 ## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
 | Alice reminders do not reach CalDAV | Scenario C is marked experimental; the source is added by an external PR to YandexStation |
-| Stock HA CalDAV refreshes only about every 15 min | Accepted; the pair interval does not speed up another integration |
+| Yandex marks completion with `COMPLETED` only; stock HA CalDAV reads `STATUS` only and refreshes every ~15 min | Own CalDAV `todo` platform (FR-13) with RFC 5545 completion rules and its own interval |
 | iCloud CalDAV does not see "upgraded" lists | Environment requirement in the README |
 | Google Tasks loses the time of day | `date_only` downgrade, not a conflict |
 | The `add_item` service does not return a uid | Re-read and match by content (FR-1.4) |
@@ -220,3 +232,12 @@ Source: architecture review IT-41 (extension beyond `todo.*`), owner's decisions
 
 - §2 Responsibility boundary: after the MVP a plugin may carry its own API client when no stock or community HA integration covers the system; a suitable integration always wins. Credentials stay in YAML via `!secret`.
 - §3: calendar events are kept as a low-priority idea; task trackers and shopping lists remain future plugins under the new §2 rule.
+
+## 11. Changes in v1.3 (2026-11-01)
+
+Source: stage 0 results (IT-42, RESEARCH §4) and the owner's decision on IT-48 (2026-11-01): no upstream PR to HA core; the fix lives in this integration, with selectable target lists.
+
+- §2 Yandex: HAlltasker's own CalDAV `todo` platform instead of the stock CalDAV integration; the boundary row admits `todo.*` entities created by HAlltasker itself.
+- §3, FR-13: the platform, list selection, RFC 5545 completion semantics, own refresh interval.
+- §6.5: the CalDAV libraries are the only allowed manifest requirements, pinned to HA core's versions.
+- §7 C1, C3 and §8: scenarios and risks updated for FR-13.

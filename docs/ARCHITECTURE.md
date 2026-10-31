@@ -1,8 +1,8 @@
-# HAlltasker — architecture (v1.1.1, 2026-10-28)
+# HAlltasker — architecture (v1.2, 2026-11-01)
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/ARCHITECTURE.md](ru/ARCHITECTURE.md); if they differ, this file wins.
 
-This document describes **how** `docs/SPEC.md` is implemented. The signatures and data structures here are binding: tasks in `docs/TASKS.md` refer to them by name. Changes against v1.0 are listed in §14.
+This document describes **how** `docs/SPEC.md` is implemented. The signatures and data structures here are binding: tasks in `docs/TASKS.md` refer to them by name. Changes against v1.0 are listed in §14, against v1.1.1 in §15.
 
 ## 1. Overview
 
@@ -11,7 +11,7 @@ Home Assistant
 │
 ├── todo.icloud_reminders   (stock CalDAV)         ─┐
 ├── todo.google_tasks_my    (stock Google Tasks)   ─┤  nodes = todo.* entities
-├── todo.yandex_dela        (stock CalDAV)         ─┤
+├── todo.halltasker_moi_dela (own CalDAV platform, §4a) ─┤
 └── todo.home_list          (local_todo)           ─┘
             ▲  │  services todo.get_items / add_item / update_item / remove_item
             │  ▼
@@ -33,6 +33,8 @@ custom_components/halltasker
 │   ├── registry.py    choose a plugin by the node string
 │   └── ha_todo.py     HaTodoPlugin: todo.* ↔ CanonicalTask
 ├── sensor.py          status sensor per pair
+├── caldav_client.py   CalDAV helpers over the `caldav` library: connect, select collections, VTODO ↔ TodoItem (§4a)
+├── todo.py            todo platform: one TodoListEntity per selected CalDAV list (SPEC FR-13)
 ├── diagnostics.py
 ├── schema.py          CONFIG_SCHEMA (voluptuous) and parsing of YAML into dataclasses
 ├── const.py
@@ -216,6 +218,77 @@ Mapping:
 
 Create (SPEC FR-1, item 4): after `add_item` the plugin calls `get_items`, takes the items whose `uid` is not in the passed set `known_ids`, and picks the one whose canonical form equals the downgraded task being created **with `status` forced to `open`**, because stock `todo.add_item` has no status input and always creates an open item. If the task being created is `done`, then once the item is found the plugin calls `todo.update_item` with `status: "completed"` (the item id is the found uid) before returning the uid; a failure of that call raises `NodeUnavailable("created item not completed")`. The engine never sees the intermediate open state. If the process dies between the two calls, the next cycle finds an orphan (step 5 below), which the engine then brings to the expected state with an `update`. If there are several, take the first one. If there are none, retry the read after 1 s, at most 3 attempts, then raise `NodeUnavailable("created item not found")`. For this, the base contract `Plugin.create` (§3) takes `known_ids: frozenset[str]` — the identifiers already known to the core at the time of the call.
 
+## 4a. CalDAV `todo` platform (`todo.py`, `caldav_client.py`)
+
+Why: SPEC FR-13. Stock HA CalDAV derives the to-do status from `STATUS` only and exposes every collection (RESEARCH §1). The platform is adapted from HA core `homeassistant/components/caldav/{api.py,todo.py}` (2026.9.4); the calendar platform, the config flow and the `WARNED_CALENDARS` bookkeeping are dropped.
+
+Configuration dataclasses (`core/model.py`, no HA imports):
+
+```python
+@dataclass(frozen=True)
+class CalDavList:
+    id: str                       # [a-z0-9_]+, unique across all accounts (forms the entity id)
+    name: str | None = None       # collection displayname; exactly one of name / href
+    href: str | None = None       # collection path, e.g. "/calendars/user%40yandex.ru/todos-7315205/"
+
+@dataclass(frozen=True)
+class CalDavAccount:
+    id: str                       # [a-z0-9_]+, unique
+    url: str
+    username: str
+    password: str
+    verify_ssl: bool = True
+    interval: int = 300           # seconds, >= 60
+    lists: tuple[CalDavList, ...] = ()
+```
+
+`schema.py` exports `parse_caldav(conf: dict) -> list[CalDavAccount]` (empty list when the `caldav` key is absent).
+
+`caldav_client.py` — synchronous code, always run through `hass.async_add_executor_job`; imports `caldav`, `icalendar`, `homeassistant.components.todo.TodoItem`, `dt_util`:
+
+```python
+def connect(account: CalDavAccount) -> caldav.DAVClient
+    # caldav.DAVClient(account.url, username=..., password=..., ssl_verify_cert=account.verify_ssl, timeout=10)
+
+def find_collection(client: caldav.DAVClient, wanted: CalDavList) -> caldav.Calendar
+    # client.principal().calendars(); match calendar.name == wanted.name
+    # or urlparse(str(calendar.url)).path == wanted.href; LookupError when absent or ambiguous
+
+def fetch_items(calendar: caldav.Calendar) -> list[TodoItem]
+    # calendar.search(todo=True, include_completed=True); to_todo_item on each resource.icalendar_component; None is skipped
+
+def to_todo_item(vtodo: icalendar.Todo) -> TodoItem | None        # pure
+def apply_todo_item(vtodo: icalendar.Todo, item: TodoItem, now: dt.datetime) -> None   # pure, mutates vtodo
+def create_kwargs(item: TodoItem) -> dict[str, Any]               # for calendar.save_todo(**kwargs)
+```
+
+Mapping (`to_todo_item`), RFC 5545:
+
+| VTODO | TodoItem |
+|---|---|
+| `UID`, `SUMMARY` | `uid`, `summary`; either missing → `None` (the item is skipped) |
+| `DUE` date | `due` = `date`; `DUE` datetime → `dt_util.as_local(value)` |
+| `DESCRIPTION` | `description` |
+| `STATUS` in {`COMPLETED`, `CANCELLED`} | `status = completed` |
+| no `STATUS`, and `COMPLETED` present or `PERCENT-COMPLETE` == 100 | `status = completed` |
+| anything else (`NEEDS-ACTION`, `IN-PROCESS`, nothing) | `status = needs_action` |
+| `COMPLETED` datetime, when the status is completed | `completed` (local time) |
+
+Write (`apply_todo_item`): `SUMMARY` always; `DUE` set (`VALUE=DATE` for a `date`, a tz-aware datetime otherwise) or removed; `DESCRIPTION` set or removed; `completed` → `STATUS:COMPLETED`, `PERCENT-COMPLETE:100`, and `COMPLETED:<now in UTC>` only if `COMPLETED` is absent (the original completion time is kept); `needs_action` → `STATUS:NEEDS-ACTION`, remove `COMPLETED` and `PERCENT-COMPLETE`. `DTSTAMP` is added when absent (Yandex omits it; the `caldav` library already warns and adds it on parse, RESEARCH §4). `create_kwargs` mirrors core's `async_create_todo_item` (`summary`, `status`, `due`, `description`); a `completed` create is not needed, `todo.add_item` always creates open items (§4).
+
+`todo.py`:
+
+- `async_setup_entry(hass, entry, async_add_entities)`: for each account of `parse_caldav(hass.data[DOMAIN]["yaml"])` — `client = await hass.async_add_executor_job(connect, account)`; for each list one `CalDavTodoCoordinator(DataUpdateCoordinator[list[TodoItem]])` with `update_interval = timedelta(seconds=account.interval)`; `_async_update_data` resolves the collection on first use (`find_collection`, cached) and returns `fetch_items`; `LookupError`, `requests.ConnectionError`, `requests.Timeout`, `DAVError` → `UpdateFailed` (logged once by the coordinator). Entities are added with `await coordinator.async_config_entry_first_refresh()` **not** used, because one unreachable server must not fail the whole entry: use `async_refresh()` and add the entity whatever the result.
+- `CalDavTodoEntity(CoordinatorEntity, TodoListEntity)`: `_attr_has_entity_name = True`, `_attr_name = f"HAlltasker {list.id}"` (entity id `todo.halltasker_<list id>`), `_attr_unique_id = f"halltasker_caldav_{account.id}_{list.id}"`, `_attr_supported_features` = CREATE | UPDATE | DELETE | SET_DUE_DATE | SET_DUE_DATETIME | SET_DESCRIPTION (119), `todo_items` = `coordinator.data`, `available` = `coordinator.last_update_success`.
+- `async_create_todo_item`: `calendar.save_todo(**create_kwargs(item))` in the executor, then `await coordinator.async_refresh()` — a synchronous refresh, so that the uid lookup of `ha_todo` (§4) sees the item on the next `get_items`.
+- `async_update_todo_item`: `todo = calendar.todo_by_uid(uid)` → `apply_todo_item(todo.icalendar_component, item, dt_util.utcnow())` → `todo.save(no_create=True, obj_type="todo")`, then `async_refresh()`. `NotFoundError` → `HomeAssistantError(f"Could not find To-do item {uid}")`.
+- `async_delete_todo_items`: `todo_by_uid` + `delete` per uid, serially (some servers reject concurrent modifications), then `async_refresh()`.
+- Every `requests.ConnectionError`, `requests.Timeout`, `DAVError` in a write → `HomeAssistantError` (the `ha_todo` plugin turns it into `NodeUnavailable`).
+
+`__init__.py` forwards `["sensor", "todo"]` in `async_setup_entry` and unloads the same list. With no `caldav:` section the `todo` platform adds no entities. `halltasker.reload` rebuilds the platform like everything else (§7).
+
+Manifest: `"requirements": ["caldav==2.1.0", "icalendar==6.3.1", "vobject==0.9.9"]` — the exact pins of HA core `caldav/manifest.json` for 2026.9.4, so that a stock CalDAV integration in the same HA does not get a conflicting version. Re-pin when the HA version is raised. `requirements_dev.txt` gets the same three lines.
+
 ## 5. Downgrade (`core/downgrade.py`)
 
 ```python
@@ -355,9 +428,19 @@ The plan is serialized to a list of dicts for the sensor and for the `dry_run` s
 
 ```yaml
 halltasker:
+  caldav:                           # optional, SPEC FR-13
+    - id: yandex                    # [a-z0-9_]+, unique
+      url: https://caldav.yandex.ru
+      username: !secret yandex_login
+      password: !secret yandex_app_password
+      verify_ssl: true              # default true
+      interval: 300                 # seconds, >= 60, default 300
+      lists:
+        - id: moi_dela              # -> todo.halltasker_moi_dela
+          name: "Мои дела"          # collection displayname; or href: /calendars/.../todos-7315205/
   pairs:
     - id: yandex_to_icloud          # required, unique, [a-z0-9_]+
-      a: todo.yandex_dela           # required, entity_id of the todo domain
+      a: todo.halltasker_moi_dela   # required, entity_id of the todo domain
       b: todo.icloud_reminders      # required
       interval: 60                  # >= 15, default 60
       conflict: prefer_a            # prefer_a | prefer_b
@@ -383,13 +466,15 @@ Validation rules beyond field types (all checked in `CONFIG_SCHEMA`, error = the
 2. `a != b` in every pair.
 3. No two pairs connect the same two nodes (in either order).
 4. **No cycles:** the undirected graph whose vertices are nodes and whose edges are pairs must be a forest. Check with union-find over the pairs in order: if both nodes of a pair already have the same root, raise `vol.Invalid(f"pairs form a cycle at pair '{id}'")`.
+5. `caldav[].id` values are unique; `caldav[].lists[].id` values are unique across all accounts (they form entity ids); every list has exactly one of `name` / `href`; `interval >= 60`; `url` is a valid URL (`cv.url`).
+6. A pair may reference `todo.halltasker_<list id>`; whether the entity exists is a runtime matter (FR-1.5), not a schema check.
 
 The schema is built on `voluptuous`. Facts for HA 2026.9.4 (checked in the installed package): HA already depends on `probatio==0.11.4` and has started migrating to it (`helpers/config_validation.py` imports both), but almost all of HA core still uses `voluptuous`, which is a real package installed through HA's own dependencies (`annotatedyaml`, `hass_nabucasa`). `schema.py` stays on `voluptuous`; re-check this when the pinned HA version is raised. Only `schema.py` changes when we move to `probatio`. `schema.py` exports `CONFIG_SCHEMA` and `def parse_pairs(conf: dict) -> list[SyncPair]`; HA reads `CONFIG_SCHEMA` from the integration module, so `__init__.py` re-exports it (listed in `__all__`).
 
 `__init__.py`:
 
 - `async_setup(hass, config)` saves `config[DOMAIN]` to `hass.data[DOMAIN]["yaml"]`, registers the `reload` service (below), and, if there is no ConfigEntry yet, starts the import flow with `hass.async_create_task(hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_IMPORT}, data={}))`. Awaiting `async_init` inside `async_setup` deadlocks the setup.
-- `async_setup_entry` builds `LinkStore`, `PluginRegistry` and `SyncCoordinator` from `hass.data[DOMAIN]["yaml"]` (not from `entry.data`), registers `sync_now`/`dry_run` and forwards the `sensor` platform with `hass.config_entries.async_forward_entry_setups(entry, ["sensor"])`.
+- `async_setup_entry` builds `LinkStore`, `PluginRegistry` and `SyncCoordinator` from `hass.data[DOMAIN]["yaml"]` (not from `entry.data`), registers `sync_now`/`dry_run` and forwards the `sensor` and `todo` platforms with `hass.config_entries.async_forward_entry_setups(entry, ["sensor", "todo"])`.
 - `async_unload_entry` stops the coordinator, unloads the platform with `hass.config_entries.async_unload_platforms(entry, ["sensor"])` and removes `sync_now`/`dry_run`.
 
 **Reload** (SPEC FR-10.5). `homeassistant.reload_config_entry` does **not** re-read `configuration.yaml`: the entry is rebuilt from the YAML loaded at startup. Therefore HAlltasker has its own service `halltasker.reload`:
@@ -513,6 +598,8 @@ The core does not import HA: `LinkStore` accepts an object with the methods `asy
 - `tests/core/`: pure Python, no HA. `FakeStorage` with in-memory `async_load/async_save`. `FakePlugin` with controllable lists and capabilities, recording calls. All acceptance scenarios of group A from SPEC §7 are checked through it at the engine level.
 - `tests/plugins/test_ha_todo.py`: the `hass` fixture from `pytest-homeassistant-custom-component`; services of the `todo` domain are registered manually through `hass.services.async_register` with call recording; entity state through `hass.states.async_set("todo.x", "0", {"supported_features": 127})`.
 - `tests/test_init.py`: loading the integration from YAML, creation of the ConfigEntry, appearance of the sensor.
+- `tests/test_caldav_client.py`: pure tests of `to_todo_item` / `apply_todo_item` / `create_kwargs` on `icalendar.Todo` objects built from strings: the Yandex fixtures of RESEARCH §4 (no `DTSTAMP`, `COMPLETED` without `STATUS`), `PERCENT-COMPLETE:100`, `STATUS:NEEDS-ACTION` plus `COMPLETED`, date vs datetime `DUE`, reopen removes `COMPLETED`.
+- `tests/test_todo_caldav.py`: the platform with `connect` / `find_collection` / `fetch_items` patched in `custom_components.halltasker.todo` and a fake calendar object that records `save_todo` / `todo_by_uid` / `delete`; checks the entity id, features 119, `get_items` serialization, `unavailable` after `UpdateFailed`, refresh after a write. No network in tests.
 - `tests/conftest.py`: `pytest_plugins = "pytest_homeassistant_custom_component"`, autouse fixture `auto_enable_custom_integrations`.
 - `tests/todo_platform.py` + `tests/test_e2e.py`: end-to-end tests through the **real** `todo.*` services. `local_todo` cannot be used in tests (it needs the `ical` package, which is not in `requirements_dev.txt`), so the tests register an in-memory `TodoListEntity` platform under a test domain (`MemoryTodoEntity`, built the same way as HA's own `tests/components/todo` helpers). The helpers exist in the installed `pytest_homeassistant_custom_component.common`: `MockModule`, `MockPlatform`, `MockConfigEntry`, `mock_integration(hass, MockModule("test", ...))`, `mock_platform(hass, "test.todo", MockPlatform(async_setup_entry=...))`. The entity implements `todo_items`, `async_create_todo_item`, `async_update_todo_item`, `async_delete_todo_items` over a dict and sets `_attr_supported_features` from a constructor argument, so one test can build a full-featured node and a date-only node. This catches what fake services cannot: `ServiceValidationError` on unsupported fields, the real `get_items` serialization, uid lookup.
 - In integration tests the manifest dependency `"todo"` loads the real todo services; tests that fake the services must register the fakes **after** the integration setup (the last registration wins).
@@ -559,3 +646,7 @@ New in v1.1.1 (2026-10-28), from review remarks on IT-21, IT-24, IT-34:
 - Locally accepted change generalized: no write action planned → every `changed` side accepted (§6.1 step 5).
 - `ha_todo.create` of a done task = `add_item` + lookup with `status` forced open + `update_item(status)` by uid (§4).
 - Orphan matching uses `apply_transform(rule, present.current, tz)` — what `create` would write — and converges a differing orphan with a gated `update`/`complete` (§6.1 step 5).
+
+## 15. Changes in v1.2 (2026-11-01)
+
+Source: SPEC v1.3 (FR-13), the owner's decision on IT-48. Own CalDAV `todo` platform: §1 (tree), §4a, §7 (`caldav:` section, validation 5–6, platforms `["sensor", "todo"]`), §12 (two test modules), manifest requirements pinned to HA core's `caldav` versions. The core, the `ha_todo` plugin and the engine are unchanged.
