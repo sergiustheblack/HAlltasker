@@ -111,4 +111,41 @@ The MVP code does not depend on the results: the Yandex node is an ordinary `tod
 
 ## 4. Stage 0 results
 
-_Not performed. Fill in after running steps 1–5: date, collections, VTODO content for each phrase, behavior on writes from outside, entity_id values in HA._
+### 2026-10-31 — steps 1–4
+
+**Step 1: collections.** PROPFIND returned HTTP 207 and these collections:
+
+| href | displayname | component |
+|---|---|---|
+| `/calendars/sergius%40goes.black/todos-2736030/` | Не забыть | VTODO |
+| `/calendars/sergius%40goes.black/todos-7315205/` | Мои дела | VTODO |
+| `/calendars/sergius%40goes.black/events-28169661/` | Мои события | VEVENT |
+
+**Step 2: voice commands.** Alice reported two reminders: «проверить Халтаскер» at 23:45 and «проверить Халтаскер 1» at 23:47. Both reached `todos-7315205` as VTODO, but only with a date:
+
+| SUMMARY | UID | DUE | VALARM | STATUS |
+|---|---|---|---|---|
+| `проверка helltaker 1` | `JlvjjusKyandex.ru` | `DUE;VALUE=DATE:20261031` | absent | absent |
+| `проверка халтаскер 1` | `I0Pr4XtZyandex.ru` | `DUE;VALUE=DATE:20261031` | absent | absent |
+
+Neither VTODO contains `DTSTAMP`. No matching VEVENT was found. The reminder times known to Alice are not exposed through CalDAV, so scenario C2 remains experimental; scenario C1 is feasible with a date-only DUE.
+
+**Step 3: writing from outside.** A direct PUT created UID `halltasker-it42-alice-20261031-01` with HTTP 201. Its summary was changed to «проверить синхронизацию календаря» to avoid speech-recognition ambiguity. Alice listed this externally created item. A PUT with `If-Match` set `STATUS:COMPLETED` successfully, but Alice still listed the item at the following check. DELETE with `If-Match` returned HTTP 204, a subsequent GET returned 404, and Alice then stopped listing it. These observations do not distinguish STATUS handling from propagation or caching. The external test item was cleaned up; existing personal items were not modified.
+
+**Step 4: stock HA CalDAV.** The integration loaded successfully and created `todo.ne_zabyt` ("Не забыть") and `todo.moi_dela` ("Мои дела"), both with `supported_features: 119` (all except MOVE).
+
+- HA write checks used only the initially empty `todo.ne_zabyt`. Creating an item with `due_date: 2026-11-01` and a description returned the same fields, a UID, and `status: needs_action`.
+- Updating it to `completed` moved it from the needs-action query to the completed query. Deleting it by UID succeeded.
+- Creating an item with `due_datetime: 2026-11-01 23:45:00` returned `due: 2026-11-01T23:45:00+03:00`. Deleting it succeeded.
+- After cleanup, both needs-action and completed queries for `todo.ne_zabyt` returned empty lists.
+- The CalDAV client repeatedly warned that Yandex VTODO objects omit `DTSTAMP`; it adds the field before parsing (`components/caldav/todo.py:69`). The write checks passed despite this compatibility warning.
+
+**Supplement: native Yandex completion.** A manually created VTODO (`UID:523PFmF5yandex.ru`) initially had `DUE;VALUE=DATE:20261031` and no STATUS; HA exposed it as `needs_action`. Closing it in Yandex Calendar added only `COMPLETED:20261031T204636Z` and changed the ETag from `1793479427741` to `1793479596610`; it did not add `STATUS:COMPLETED`. Stock HA CalDAV continued to return the item as `needs_action`, and its completed query remained empty. Native Yandex completion is therefore invisible to HAlltasker through the stock todo API. Tracked as IT-48.
+
+**Step 5: private reminders API (2026-11-01).** A one-off script in the HA container used the existing YandexStation session without printing its credentials and sent POST `https://rpc.alice.yandex.ru/gproxy/get_reminders` with `ALARM_HEADERS` and no request body. The response was HTTP 200:
+
+```json
+{"reminders":[{"id":"7e5e294d-980e-0adc-c299-eba7e0c914dc","text":"Тест ручной","trigger_policy":{"single_trigger_policy":{"datetime":"2026-10-31T21:05:00"}},"play_settings":{"send_push":{"state":"Disabled"},"play_location":{"selected_devices":{"selected_device_ids":["R103BE300ZXT2T"]}}}}]}
+```
+
+The private API exposes timed reminders as separate objects with `id`, `text`, `trigger_policy.single_trigger_policy.datetime`, and playback device IDs. This confirms that Alice/УД reminders and Yandex Calendar VTODO objects must be handled separately; the date-only CalDAV representation cannot provide the reminder time.
