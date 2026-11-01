@@ -6,7 +6,7 @@
 
 ### Yandex Alice
 
-- There is no public reminders API. The HA community uses the private APIs `iot.quasar.yandex.ru` and `rpc.alice.yandex.ru` through [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation). YandexStation has alarms (`gproxy/get_alarms`, `create_alarm`, `change_alarm`, `cancel_alarms` → a `calendar` entity) and synchronization of the shopping list with any `todo.*` by sending a text command to the speaker and parsing the reply (`hass/todo_list.py`, `hass/shopping_list.py`). There are no reminders in any form; [issue #587 "Add reminders support"](https://github.com/AlexxIT/YandexStation/issues/587) has been open since 2024-12 with no activity and is the entry point for a future external PR.
+- There is no public reminders API. The HA community uses the private APIs `iot.quasar.yandex.ru` and `rpc.alice.yandex.ru` through [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation). Confirmed 2026-11-01 (§4 step 5): `POST rpc.alice.yandex.ru/gproxy/get_reminders` with the alarm headers returns the account's timed reminders; HAlltasker uses it through YandexStation's live session (SPEC FR-14, ARCHITECTURE §4b). YandexStation keeps the `YandexQuasar` per config entry in `hass.data["yandex_station"][<entry unique_id>]` and its speakers in `hass.data["yandex_station"]["speakers"]` (sources, master 2026-11-01). YandexStation has alarms (`gproxy/get_alarms`, `create_alarm`, `change_alarm`, `cancel_alarms` → a `calendar` entity) and synchronization of the shopping list with any `todo.*` by sending a text command to the speaker and parsing the reply (`hass/todo_list.py`, `hass/shopping_list.py`). There are no reminders in any form; [issue #587 "Add reminders support"](https://github.com/AlexxIT/YandexStation/issues/587) has been open since 2024-12 with no activity and is the entry point for a future external PR.
 - Alice adds to-do items (дело) only to the «Мои дела» collection but reads out every VTODO collection of the account (owner's observation, 2026-11-01); so «Мои дела» is the sync target and other collections stay untouched.
 - Alice events and to-do items (дело) end up in Yandex Calendar (Яндекс Календарь) as VEVENT and VTODO (Yandex help, see the sources under the entity map; one [qna.habr.com](https://qna.habr.com/q/637480) answer points to the Calendar to-do sidebar). Where timed reminders live is **not confirmed**: the 2021 [iphones.ru](https://www.iphones.ru/iNotes/kak-sozdavat-napominaniya-na-iphone-pri-pomoshchi-alisy-ot-yandeks-12-29-2021) article saw «Напомни купить хлеб завтра» (Remind me to buy bread tomorrow) as an entry in iPhone Reminders through Yandex CalDAV, while another qna.habr answer says reminders are stored locally. Stage 0 (§2) settles this.
 - Intercepting voice phrases in HA: [dext0r/ha-yandex-station-intents](https://github.com/dext0r/ha-yandex-station-intents). [dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home) works in the opposite direction (HA → Alice) and is not suitable for reading reminders.
@@ -99,7 +99,24 @@ Add the CalDAV integration in HA: URL `https://caldav.yandex.ru`, login, app pas
 
 ### Step 5. Hypothesis: private reminders API
 
-Only if step 2 showed that a reminder with a time did not reach CalDAV. From a YandexStation session (`self.quasar.session`) run `POST https://rpc.alice.yandex.ru/gproxy/get_reminders` with the `ALARM_HEADERS` headers from `core/yandex_quasar.py`. Record any response other than 404 in full. This is material for an external PR to YandexStation, not for HAlltasker code.
+Only if step 2 showed that a reminder with a time did not reach CalDAV. From a YandexStation session (`self.quasar.session`) run `POST https://rpc.alice.yandex.ru/gproxy/get_reminders` with the `ALARM_HEADERS` headers from `core/yandex_quasar.py`. Record any response other than 404 in full. Result: see §4 step 5; it became the basis of SPEC FR-14 and of stage 1 (§2b).
+
+## 2b. Stage 1: the private reminders API (for SPEC FR-14)
+
+Performed by the owner, like stage 0. Two ways: (a) the one-off script of §4 step 5 in the HA container with the YandexStation session; (b) capturing the traffic of the «Дом с Алисой» app through mitmproxy — the reliable way for the write calls. Record everything in §5 without credentials.
+
+1. **Read.** With three reminders set by voice (one-off, recurring daily, on a second speaker if any) call `POST gproxy/get_reminders` and record the full JSON: every key of `trigger_policy` and `play_settings`, the `id` format, and whether reminders of all speakers of the account are returned.
+2. **Write.** Find the create, change and cancel calls: URL, method, headers beyond `ALARM_HEADERS`, request body, response body (does create return the `id`?). Hypotheses by analogy with alarms in `yandex_quasar.py`: `gproxy/create_reminder`, `gproxy/change_reminder`, `gproxy/cancel_reminders` with `{"reminder": {...}}` / `{"reminder_ids": [...]}`; a `device_id` in `play_location` is probably required. Verify each hypothesis with a real call and record the status code and body.
+3. **Fired reminders.** Set a reminder two minutes ahead, let it fire, then call `get_reminders` right after, after 10 minutes and after 1 hour: is it still returned, and with which fields changed?
+4. **Time zone.** Set a reminder at a known wall-clock time and compare it with the naive `datetime` string; record the HA time zone.
+5. **Cancel by voice.** «Алиса, удали напоминание …» → does the reminder disappear from `get_reminders` immediately?
+
+| Result | Consequence |
+|---|---|
+| Write calls found | FR-14.5 is implemented in full (IT task «FR-14 writes») |
+| Write calls not found | The node stays read-only: reminders → other systems only; pairs toward it use `create: false`, `update: false`, `complete: false`, `delete: false` |
+| A fired reminder disappears | `delete_past_due: false` toward the other side is mandatory in the README example |
+| A fired reminder stays | Nothing to do; the item stays open on both sides |
 
 ## 3. How the results affect the project
 
@@ -158,3 +175,7 @@ The script loaded the existing YandexStation config-entry data without printing 
 ```
 
 The private API exposes timed reminders as separate objects with `id`, `text`, `trigger_policy.single_trigger_policy.datetime`, and playback device IDs. This confirms that Alice/УД reminders and Yandex Calendar VTODO objects must be handled separately; the date-only CalDAV representation cannot provide the reminder time.
+
+## 5. Stage 1 results
+
+_Not performed. Fill in after §2b: date, full `get_reminders` JSON (ids may be shortened), write endpoints with bodies and responses, fired-reminder behavior, time zone, cancel-by-voice behavior._
