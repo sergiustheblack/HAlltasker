@@ -8,7 +8,7 @@ Custom-интеграция для Home Assistant: двусторонняя си
 
 - Требования: [docs/ru/SPEC.md](docs/ru/SPEC.md)
 - Архитектура: [docs/ru/ARCHITECTURE.md](docs/ru/ARCHITECTURE.md)
-- Задачи (только на английском): [docs/TASKS.md](docs/TASKS.md)
+- Задачи: Yandex Tracker, очередь `IT` (workflow для агентов: [docs/TRACKER.md](docs/TRACKER.md))
 - Исследование и ограничения внешних систем: [docs/ru/RESEARCH.md](docs/ru/RESEARCH.md)
 - Проверка актуальности внешних источников: [docs/LINK_CHECK.md](docs/LINK_CHECK.md)
 

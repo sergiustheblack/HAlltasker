@@ -6,19 +6,19 @@ Every agent reads this file before working in the repository. The rules are shor
 
 ## What this project is
 
-HAlltasker is a custom integration for Home Assistant on Python 3.14. It synchronizes tasks between `todo.*` entities. Requirements: `docs/SPEC.md`. Design: `docs/ARCHITECTURE.md`. Task list: `docs/TASKS.md`.
+HAlltasker is a custom integration for Home Assistant on Python 3.14. It synchronizes tasks between `todo.*` entities. Requirements: `docs/SPEC.md`. Design: `docs/ARCHITECTURE.md`. Yandex Tracker is the only source of tasks.
 
-The work is also tracked in Yandex Tracker. After finishing a task, mirror it per `docs/TRACKER.md`. Tasks newer than T-31 exist only in the tracker: take the lowest-key open issue tagged `role:executor` (see `docs/TRACKER.md`), and commit as `IT-<N>: <summary>`.
+Read `docs/TRACKER.md` and only the file for your assigned role: `TRACKER.developer.md`, `TRACKER.architect.md`, or `TRACKER.reviewer.md`. Take work with `yt next` and `yt claim`; commit as `IT-<N>: <issue summary>`.
 
-The issue's `role:*` tag defines your role for that issue. `agent:<name>` and `review:<name>` record participation for statistics; they do not assign work. Code review is optional unless the issue description says `Code review: required`.
+The issue's `role:*` tag defines your role for that issue. `agent:<name>` and `review:<name>` record participation for statistics; they do not assign work. Code review is optional unless the current specification says `Code review: required`.
 
 ## Order of work on a task
 
 0. If you have not yet been given a name by the owner, ask: "What name should I use in tracker tags, comment signatures and my branch?" Wait for the answer before doing anything else (see `docs/TRACKER.md`).
 
-1. Open `docs/TASKS.md` and take the first unfinished task (for T-32 and later: the tracker, see above). Tasks are executed strictly in order.
-2. Read the sections of `docs/ARCHITECTURE.md` named in the task. Do not change signatures and names from the architecture.
-3. Create and change only the files listed in the task. If you need another file, stop and record a question in `docs/QUESTIONS.md` (format below). For tracker-native tasks (T-32 and later) the question goes into the issue as a `QUESTION:`/`DISPUTE:` comment and the issue moves to `needInfo` (see `docs/TRACKER.md`, "Workflow"). Read all comments on the issue before starting; a reopened issue means the architect or reviewer left `REWORK:` remarks.
+1. Claim the lowest available Tracker issue for your role. The claim output provides the current specification and the role context; do not print the full history by default.
+2. Read the sections of `docs/ARCHITECTURE.md` named in the current specification. Do not change signatures and names from the architecture.
+3. Create and change only the files listed in the current specification. If you need another file, stop and route a `QUESTION:`/`DISPUTE:` comment to the architect as described in your role file. A reopened issue's latest `REWORK:` comment gives the reason.
 4. Write the code and the tests of the task.
 5. Run the checks:
 
@@ -27,8 +27,7 @@ The issue's `role:*` tag defines your role for that issue. `agent:<name>` and `r
    ```
 
    All three commands must finish without errors. If `ruff format --check` complains, run `ruff format .` and repeat.
-6. Make one commit with the message `T-NN: <task title from TASKS.md>`.
-7. In `docs/TASKS.md` mark the task: add `✅` at the start of the heading.
+6. Make one commit with the message `IT-<N>: <issue summary>`, then finish or route the issue with `yt done` as described in `docs/TRACKER.developer.md`.
 
 ## Forbidden
 
@@ -70,3 +69,7 @@ python -c "import homeassistant.components.todo.const as c; print([f.name for f 
 ```
 
 Do not look for answers on the internet: behavior in other versions differs.
+
+## HACS releases
+
+HACS releases must use semantic version tags in the format `MAJOR.MINOR.PATCH` (for example, `1.2.3`).

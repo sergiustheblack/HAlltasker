@@ -8,7 +8,7 @@ Status: in development, MVP not released.
 
 - Requirements: [docs/SPEC.md](docs/SPEC.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Tasks: [docs/TASKS.md](docs/TASKS.md)
+- Tasks: Yandex Tracker, queue `IT` (agent workflow: [docs/TRACKER.md](docs/TRACKER.md))
 - Research and constraints of external systems: [docs/RESEARCH.md](docs/RESEARCH.md)
 - Verification of external sources: [docs/LINK_CHECK.md](docs/LINK_CHECK.md)
 
