@@ -6,7 +6,7 @@
 
 ### Яндекс Алиса
 
-- Публичного API напоминаний нет. Сообщество HA использует приватные API `iot.quasar.yandex.ru` и `rpc.alice.yandex.ru` через [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation). В YandexStation есть будильники (`gproxy/get_alarms`, `create_alarm`, `change_alarm`, `cancel_alarms` → сущность `calendar`) и синхронизация списка покупок с любой `todo.*` через текстовую команду колонке и парсинг ответа (`hass/todo_list.py`, `hass/shopping_list.py`). Напоминаний нет ни в каком виде; [issue #587 «Add reminders support»](https://github.com/AlexxIT/YandexStation/issues/587) открыт с 2024-12 без активности и является точкой входа для будущего внешнего PR.
+- Публичного API напоминаний нет. Сообщество HA использует приватные API `iot.quasar.yandex.ru` и `rpc.alice.yandex.ru` через [AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation). Подтверждено 2026-11-01 (§4 шаг 5): `POST rpc.alice.yandex.ru/gproxy/get_reminders` с заголовками будильников возвращает напоминания учётной записи с временем; HAlltasker использует его через живую сессию YandexStation (SPEC FR-14, ARCHITECTURE §4b). YandexStation держит `YandexQuasar` на запись конфигурации в `hass.data["yandex_station"][<unique_id записи>]`, а колонки — в `hass.data["yandex_station"]["speakers"]` (исходники, master 2026-11-01). В YandexStation есть будильники (`gproxy/get_alarms`, `create_alarm`, `change_alarm`, `cancel_alarms` → сущность `calendar`) и синхронизация списка покупок с любой `todo.*` через текстовую команду колонке и парсинг ответа (`hass/todo_list.py`, `hass/shopping_list.py`). Напоминаний нет ни в каком виде; [issue #587 «Add reminders support»](https://github.com/AlexxIT/YandexStation/issues/587) открыт с 2024-12 без активности и является точкой входа для будущего внешнего PR.
 - Алиса добавляет дела только в коллекцию «Мои дела», но зачитывает все VTODO-коллекции учётной записи (наблюдение владельца, 2026-11-01); поэтому цель синхронизации — «Мои дела», остальные коллекции не трогаются.
 - События и дела Алисы попадают в Яндекс Календарь как VEVENT и VTODO (справка Яндекса, см. источники под картой сущностей; один ответ на [qna.habr.com](https://qna.habr.com/q/637480) указывает на боковую панель дел Календаря). Где хранятся напоминания с временем — **не подтверждено**: статья 2021 года на [iphones.ru](https://www.iphones.ru/iNotes/kak-sozdavat-napominaniya-na-iphone-pri-pomoshchi-alisy-ot-yandeks-12-29-2021) видела «Напомни купить хлеб завтра» как запись в iPhone Reminders через CalDAV Яндекса, а другой ответ на qna.habr утверждает, что напоминания хранятся локально. Этап 0 (§2) решает этот вопрос.
 - Перехват голосовых фраз в HA: [dext0r/ha-yandex-station-intents](https://github.com/dext0r/ha-yandex-station-intents). [dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home) работает в обратную сторону (HA → Алиса) и для чтения напоминаний не подходит.
@@ -99,7 +99,24 @@ curl -s -u 'LOGIN@yandex.ru:APP_PASSWORD' -X PUT -H 'Content-Type: text/calendar
 
 ### Шаг 5. Гипотеза приватного API напоминаний
 
-Только если шаг 2 показал, что напоминание с временем в CalDAV не попало. Из сессии YandexStation (`self.quasar.session`) выполнить `POST https://rpc.alice.yandex.ru/gproxy/get_reminders` с заголовками `ALARM_HEADERS` из `core/yandex_quasar.py`. Любой ответ, кроме 404, записать целиком. Это материал для внешнего PR в YandexStation, не для кода HAlltasker.
+Только если шаг 2 показал, что напоминание с временем в CalDAV не попало. Из сессии YandexStation (`self.quasar.session`) выполнить `POST https://rpc.alice.yandex.ru/gproxy/get_reminders` с заголовками `ALARM_HEADERS` из `core/yandex_quasar.py`. Любой ответ, кроме 404, записать целиком. Результат: см. §4 шаг 5; он стал основой SPEC FR-14 и этапа 1 (§2b).
+
+## 2b. Этап 1: приватный API напоминаний (для SPEC FR-14)
+
+Выполняет владелец, как этап 0. Два способа: (а) одноразовый скрипт из §4 шаг 5 в контейнере HA с сессией YandexStation; (б) перехват трафика приложения «Дом с Алисой» через mitmproxy — надёжный способ для вызовов записи. Всё записать в §5 без учётных данных.
+
+1. **Чтение.** При трёх напоминаниях, поставленных голосом (разовое, ежедневное, на вторую колонку, если есть), вызвать `POST gproxy/get_reminders` и записать полный JSON: все ключи `trigger_policy` и `play_settings`, формат `id`, возвращаются ли напоминания всех колонок учётной записи.
+2. **Запись.** Найти вызовы создания, изменения и отмены: URL, метод, заголовки сверх `ALARM_HEADERS`, тело запроса, тело ответа (возвращает ли создание `id`?). Гипотезы по аналогии с будильниками в `yandex_quasar.py`: `gproxy/create_reminder`, `gproxy/change_reminder`, `gproxy/cancel_reminders` с `{"reminder": {...}}` / `{"reminder_ids": [...]}`; `device_id` в `play_location`, вероятно, обязателен. Каждую гипотезу проверить реальным вызовом и записать код и тело ответа.
+3. **Сработавшие напоминания.** Поставить напоминание через две минуты, дать сработать, затем вызвать `get_reminders` сразу, через 10 минут и через час: возвращается ли оно и какие поля изменились?
+4. **Часовой пояс.** Поставить напоминание на известное настенное время и сравнить с naive-строкой `datetime`; записать часовой пояс HA.
+5. **Отмена голосом.** «Алиса, удали напоминание …» → исчезает ли напоминание из `get_reminders` сразу?
+
+| Результат | Следствие |
+|---|---|
+| Вызовы записи найдены | FR-14.5 реализуется полностью (задача «FR-14 writes») |
+| Вызовы записи не найдены | Узел остаётся только для чтения: напоминания → другие системы; пары в его сторону ставят `create: false`, `update: false`, `complete: false`, `delete: false` |
+| Сработавшее напоминание исчезает | `delete_past_due: false` в сторону другой системы обязателен в примере README |
+| Сработавшее напоминание остаётся | Ничего не делать; элемент остаётся открытым с обеих сторон |
 
 ## 3. Как результаты влияют на проект
 
@@ -113,4 +130,52 @@ curl -s -u 'LOGIN@yandex.ru:APP_PASSWORD' -X PUT -H 'Content-Type: text/calendar
 
 ## 4. Результаты этапа 0
 
-_Не выполнен. Заполнить после прогона шагов 1–5: дата, коллекции, содержимое VTODO по каждой фразе, поведение при записи извне, entity_id в HA._
+### 2026-10-31 — шаги 1–4
+
+**Шаг 1: коллекции.** PROPFIND вернул HTTP 207 и такие коллекции:
+
+| href | displayname | компонент |
+|---|---|---|
+| `/calendars/sergius%40goes.black/todos-2736030/` | Не забыть | VTODO |
+| `/calendars/sergius%40goes.black/todos-7315205/` | Мои дела | VTODO |
+| `/calendars/sergius%40goes.black/events-28169661/` | Мои события | VEVENT |
+
+**Шаг 2: голосовые команды.** Алиса сообщила о двух напоминаниях: «проверить Халтаскер» в 23:45 и «проверить Халтаскер 1» в 23:47. Оба попали в `todos-7315205` как VTODO, но только с датой:
+
+| SUMMARY | UID | DUE | VALARM | STATUS |
+|---|---|---|---|---|
+| `проверка helltaker 1` | `JlvjjusKyandex.ru` | `DUE;VALUE=DATE:20261031` | нет | нет |
+| `проверка халтаскер 1` | `I0Pr4XtZyandex.ru` | `DUE;VALUE=DATE:20261031` | нет | нет |
+
+Ни один VTODO не содержит `DTSTAMP`. Соответствующего VEVENT не найдено. Время напоминаний, известное Алисе, через CalDAV не отдаётся, поэтому сценарий C2 остаётся experimental; сценарий C1 выполним с DUE только из даты.
+
+**Шаг 3: запись снаружи.** Прямой PUT создал UID `halltasker-it42-alice-20261031-01` с HTTP 201. Его summary изменён на «проверить синхронизацию календаря», чтобы избежать двусмысленности распознавания речи. Алиса перечислила созданный снаружи элемент. PUT с `If-Match` успешно поставил `STATUS:COMPLETED`, но Алиса при следующей проверке всё ещё перечисляла элемент. DELETE с `If-Match` вернул HTTP 204, последующий GET — 404, после чего Алиса перестала его перечислять. Эти наблюдения не разделяют обработку STATUS и распространение/кэширование. Тестовый элемент удалён; личные элементы не менялись.
+
+**Шаг 4: штатная HA CalDAV.** Интеграция загрузилась и создала `todo.ne_zabyt` («Не забыть») и `todo.moi_dela` («Мои дела»), обе с `supported_features: 119` (всё, кроме MOVE).
+
+- Проверки записи из HA выполнялись только на изначально пустом `todo.ne_zabyt`. Создание элемента с `due_date: 2026-11-01` и описанием вернуло те же поля, UID и `status: needs_action`.
+- Обновление до `completed` перенесло его из запроса needs-action в запрос completed. Удаление по UID прошло.
+- Создание элемента с `due_datetime: 2026-11-01 23:45:00` вернуло `due: 2026-11-01T23:45:00+03:00`. Удаление прошло.
+- После очистки оба запроса (needs-action и completed) для `todo.ne_zabyt` вернули пустые списки.
+- Клиент CalDAV многократно предупреждал, что VTODO Яндекса не содержат `DTSTAMP`; он добавляет поле перед разбором (`components/caldav/todo.py:69`). Проверки записи прошли несмотря на это предупреждение совместимости.
+
+**Дополнение: закрытие средствами Яндекса.** Созданный вручную VTODO (`UID:523PFmF5yandex.ru`) изначально имел `DUE;VALUE=DATE:20261031` и не имел STATUS; HA показывал его как `needs_action`. Закрытие в Яндекс Календаре добавило только `COMPLETED:20261031T204636Z` и изменило ETag с `1793479427741` на `1793479596610`; `STATUS:COMPLETED` не появился. Штатная HA CalDAV продолжила отдавать элемент как `needs_action`, запрос completed остался пустым. Закрытие средствами Яндекса, таким образом, невидимо для HAlltasker через штатный todo API. Отслеживается как IT-48.
+
+**Шаг 5: приватный API напоминаний (2026-11-01).** Одноразовый скрипт в контейнере HA переиспользовал стороннюю интеграцию YandexStation через импорты:
+
+```python
+from custom_components.yandex_station.core.yandex_quasar import ALARM_HEADERS
+from custom_components.yandex_station.core.yandex_session import YandexSession
+```
+
+Скрипт загрузил данные существующей записи конфигурации YandexStation без вывода учётных данных, построил из них `YandexSession`, вызвал `refresh_cookies()` и отправил POST `https://rpc.alice.yandex.ru/gproxy/get_reminders` с `ALARM_HEADERS` интеграции и без тела запроса. HAlltasker сам не выполнял авторизацию Яндекса и не хранил cookies. Адаптер напоминаний УД поэтому планируется вокруг YandexStation как поставщика сессии, а не дублирует авторизацию Яндекса. Ответ был HTTP 200:
+
+```json
+{"reminders":[{"id":"7e5e294d-980e-0adc-c299-eba7e0c914dc","text":"Тест ручной","trigger_policy":{"single_trigger_policy":{"datetime":"2026-10-31T21:05:00"}},"play_settings":{"send_push":{"state":"Disabled"},"play_location":{"selected_devices":{"selected_device_ids":["R103BE300ZXT2T"]}}}}]}
+```
+
+Приватный API отдаёт напоминания с временем как отдельные объекты с `id`, `text`, `trigger_policy.single_trigger_policy.datetime` и идентификаторами устройств воспроизведения. Это подтверждает, что напоминания Алисы/УД и VTODO Яндекс Календаря нужно обрабатывать раздельно; представление CalDAV только с датой не может дать время напоминания.
+
+## 5. Результаты этапа 1
+
+_Не выполнен. Заполнить после §2b: дата, полный JSON `get_reminders` (id можно сократить), endpoint-ы записи с телами и ответами, поведение сработавших напоминаний, часовой пояс, поведение при отмене голосом._

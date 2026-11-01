@@ -1,8 +1,8 @@
-# HAlltasker — architecture (v1.2, 2026-11-01)
+# HAlltasker — architecture (v1.3, 2026-11-01)
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/ARCHITECTURE.md](ru/ARCHITECTURE.md); if they differ, this file wins.
 
-This document describes **how** `docs/SPEC.md` is implemented. The signatures and data structures here are binding: tasks in `docs/TASKS.md` refer to them by name. Changes against v1.0 are listed in §14, against v1.1.1 in §15.
+This document describes **how** `docs/SPEC.md` is implemented. The signatures and data structures here are binding: tasks in `docs/TASKS.md` refer to them by name. Changes against v1.0 are listed in §14, against v1.1.1 in §15, against v1.2 in §16.
 
 ## 1. Overview
 
@@ -12,6 +12,7 @@ Home Assistant
 ├── todo.icloud_reminders   (stock CalDAV)         ─┐
 ├── todo.google_tasks_my    (stock Google Tasks)   ─┤  nodes = todo.* entities
 ├── todo.halltasker_moi_dela (own CalDAV platform, §4a) ─┤
+├── todo.halltasker_alice   (own reminders platform, §4b) ─┤
 └── todo.home_list          (local_todo)           ─┘
             ▲  │  services todo.get_items / add_item / update_item / remove_item
             │  ▼
@@ -34,7 +35,9 @@ custom_components/halltasker
 │   └── ha_todo.py     HaTodoPlugin: todo.* ↔ CanonicalTask
 ├── sensor.py          status sensor per pair
 ├── caldav_client.py   CalDAV helpers over the `caldav` library: connect, select collections, VTODO ↔ TodoItem (§4a)
-├── todo.py            todo platform: one TodoListEntity per selected CalDAV list (SPEC FR-13)
+├── todo.py            todo platform: CalDAV lists (§4a) and Alice reminders (§4b)
+├── yandex_reminders.py  private reminders API of the Alice app over the YandexStation session (§4b)
+├── reminders_todo.py  todo entity for Alice reminders with local retention of cancelled items (SPEC FR-14)
 ├── diagnostics.py
 ├── schema.py          CONFIG_SCHEMA (voluptuous) and parsing of YAML into dataclasses
 ├── const.py
@@ -119,7 +122,7 @@ DeletePolicy = Literal["true", "false", "soft"]   # in YAML: true | false | soft
 @dataclass(frozen=True)
 class Filter:
     title_regex: str | None = None
-    require_due: bool = False
+    require_due: bool | Literal["datetime"] = False   # "datetime": only tasks whose due has a time
 
 @dataclass(frozen=True)
 class Transform:
@@ -132,6 +135,7 @@ class DirectionRule:
     update: bool = True
     complete: bool = True
     delete: DeletePolicy = "true"
+    delete_past_due: bool = True   # False: a deletion whose last synced due is past -> tombstone only (SPEC FR-6.7)
     filter: Filter = Filter()
     transform: Transform = Transform()
 
@@ -289,6 +293,63 @@ Write (`apply_todo_item`): `SUMMARY` always; `DUE` set (`VALUE=DATE` for a `date
 
 Manifest: `"requirements": ["caldav==2.1.0", "icalendar==6.3.1", "vobject==0.9.9"]` — the exact pins of HA core `caldav/manifest.json` for 2026.9.4, so that a stock CalDAV integration in the same HA does not get a conflicting version. Re-pin when the HA version is raised. `requirements_dev.txt` gets the same three lines.
 
+## 4b. Alice reminders `todo` platform (`reminders_todo.py`, `yandex_reminders.py`)
+
+Why: SPEC FR-14. Alice reminders with a time exist only in the private API of the Alice app (RESEARCH §4, step 5); the installed YandexStation integration already holds an authorized session for it.
+
+Configuration dataclass (`core/model.py`, no HA imports):
+
+```python
+@dataclass(frozen=True)
+class RemindersNode:
+    id: str                       # [a-z0-9_]+, unique together with caldav list ids (forms the entity id)
+    account: str | None = None    # YandexStation config entry unique_id (the login); None = the only entry
+    device: str | None = None     # speaker name or quasar device_id for reminders created from HA; None = first speaker
+    push: bool = False            # send_push for reminders created from HA
+    interval: int = 60            # seconds, >= 30
+```
+
+`schema.py` exports `parse_yandex_reminders(conf: dict) -> list[RemindersNode]` (empty list without the key).
+
+**Session provider.** YandexStation keeps `hass.data["yandex_station"][<entry unique_id>]` = `YandexQuasar` whose `.session` is a `YandexSession` (`async post(url, json=..., headers=...) -> aiohttp.ClientResponse`; it adds the CSRF token itself, refreshes cookies and retries once after 401, and raises `Exception("<url> return <status> status")` when retries are exhausted), and `hass.data["yandex_station"]["speakers"]` = `{device_id: device dict}` with `device["quasar_info"]["device_id"]` and `device["name"]`. Facts from the YandexStation sources (`__init__.py`, `core/yandex_quasar.py`, `core/yandex_session.py`, master 2026-11-01). `yandex_reminders.py` resolves them lazily on every refresh; nothing is imported from `custom_components.yandex_station` (its internal layout may change; the one-off script of RESEARCH §4 imported it, the platform does not):
+
+```python
+ALARM_HEADERS = {"accept": "application/json", "origin": "https://yandex.ru",
+                 "x-ya-app-type": "iot-app",
+                 "x-ya-application": '{"app_id":"unknown","uuid":"unknown","lang":"ru"}'}   # as YandexStation
+RPC = "https://rpc.alice.yandex.ru/gproxy/"
+_ENDPOINTS = {"list": "get_reminders", "create": None, "update": None, "cancel": None}   # None until stage 1
+
+class RemindersUnavailable(Exception): ...
+
+def resolve_session(hass, node: RemindersNode) -> Any      # the YandexSession, or raise RemindersUnavailable
+def resolve_device(hass, node: RemindersNode) -> str       # quasar device_id by name or id, or raise
+
+async def get_reminders(session) -> list[dict]             # POST get_reminders, no body -> resp["reminders"]
+async def create_reminder(session, text: str, when: dt.datetime, device_id: str, push: bool) -> str   # -> id
+async def update_reminder(session, reminder_id: str, text: str, when: dt.datetime) -> None
+async def cancel_reminder(session, reminder_id: str) -> None
+
+def to_todo_item(reminder: dict, tz: dt.tzinfo) -> TodoItem | None                  # pure
+def reminder_body(text: str, when: dt.datetime, device_id: str, push: bool) -> dict  # pure, stage 1 shape
+```
+
+The names and bodies of the three write calls are placeholders until stage 1 (RESEARCH §2b): they live in `_ENDPOINTS` and in pure body builders, so the follow-up task replaces constants and builders only. A write whose endpoint is `None` raises `RemindersUnavailable("not supported")`. Every other failure (`Exception` from the session, `aiohttp.ClientError`, `KeyError`, `ValueError`) is wrapped into `RemindersUnavailable`.
+
+Mapping (`to_todo_item`): `id` → `uid`, `text` → `summary`, `trigger_policy.single_trigger_policy.datetime` (naive ISO string, RESEARCH §4) → `due = dt.datetime.fromisoformat(s).replace(tzinfo=tz)` with `tz` = `dt_util.get_default_time_zone()` (stage 1 confirms), `status = needs_action`, no description. Without `single_trigger_policy`, `id` or `text` → `None` (skipped).
+
+`reminders_todo.py`:
+
+- `async_setup_reminders(hass, entry, async_add_entities)` is called from `todo.async_setup_entry` after the CalDAV lists (§4a). One `RemindersCoordinator(DataUpdateCoordinator[list[TodoItem]])` per node, `update_interval = timedelta(seconds=node.interval)`; `_async_update_data`: `resolve_session` → `get_reminders` → `to_todo_item` → merge with the retained items (below); `RemindersUnavailable` → `UpdateFailed`. First `async_refresh()` without `async_config_entry_first_refresh`; the entity is added whatever the result.
+- **Retention store**: `Store(hass, 1, f"halltasker_reminders_{node.id}")` holding `{"retained": {uid: {"summary": ..., "due": iso, "completed_at": iso}}}`. An item cancelled through `status: completed` is written there before the API call; `_async_update_data` appends retained items that are absent from the API answer as `completed` and drops the ones whose `due + 1 day < now`. A retained uid that reappears in the API answer is dropped from the store and shown as the API gives it.
+- `YandexRemindersEntity(CoordinatorEntity, TodoListEntity)`: `_attr_has_entity_name = True`, `_attr_name = f"HAlltasker {node.id}"` (entity id `todo.halltasker_<id>`), `_attr_unique_id = f"halltasker_reminders_{node.id}"`, features CREATE | UPDATE | DELETE | SET_DUE_DATETIME (39), `todo_items` = `coordinator.data`, `available` = `coordinator.last_update_success`.
+- `async_create_todo_item`: `item.due` is a datetime (the core sends only `due_datetime` here because SET_DUE_DATE is off; a missing due → `HomeAssistantError("reminder needs a time")`); `create_reminder(session, item.summary, item.due, resolve_device(...), node.push)`, then `await coordinator.async_refresh()`.
+- `async_update_todo_item`: `status == completed` and the current item is open → `cancel_reminder` + retain; `status == needs_action` and the uid is retained → `HomeAssistantError("cannot reopen a cancelled reminder")`; otherwise `update_reminder(session, uid, item.summary, item.due)`; then `async_refresh()`.
+- `async_delete_todo_items`: `cancel_reminder` per uid (a retained uid is only dropped from the store), then `async_refresh()`.
+- `RemindersUnavailable` in a write → `HomeAssistantError` (the `ha_todo` plugin turns it into `NodeUnavailable`).
+
+`todo.py` keeps one `async_setup_entry` that runs the CalDAV setup (§4a) and then `async_setup_reminders`. No manifest dependency on `yandex_station`: hassfest cannot validate a custom domain, so the dependency is a runtime lookup plus a README requirement.
+
 ## 5. Downgrade (`core/downgrade.py`)
 
 ```python
@@ -406,6 +467,8 @@ Side X is deleted, side Y is in state S, `rule = direction X→Y`:
 | changed | the policy prefers Y and the reverse `create` rule is allowed | `CreateAction(X)` with the task of Y, the link is updated to the new external_id |
 | changed | otherwise | tombstone only |
 
+**Past due** (SPEC FR-6.7). Before the table is applied, `router.effective_delete(rule, task, now, tz) -> DeletePolicy` returns `"false"` when `rule.delete_past_due` is False and the task's `due` is past (`datetime` → `due <= now`; `date` → `due < now.astimezone(tz).date()`; `None` → not past), otherwise `rule.delete`. The `rule.delete` column of the table means this effective value. `_plan_delete` takes the task from the deleted link's `last_synced` snapshot (fallback `last_observed`); a tombstone planned for this reason has `reason = "past due"`. The resurrection row (the policy prefers Y) is unaffected. `passes_filter` with `require_due == "datetime"` returns False unless `task.due` is a `datetime`.
+
 "Tombstone" in this table means: both links of the canonical task **in this pair** get `tombstone = True` (for `soft`, the Y link is tombstoned after the "done" write). From then on this pair ignores both items. Other pairs are not affected: a `delete` or `soft` write into Y is an ordinary change for them (the item disappears or becomes done) and is handled by their own rules. With `false` the Y item stays live for other pairs.
 
 ### 6.3 Actions (`core/actions.py`)
@@ -438,6 +501,12 @@ halltasker:
       lists:
         - id: moi_dela              # -> todo.halltasker_moi_dela
           name: "Мои дела"          # collection displayname; or href: /calendars/.../todos-7315205/
+  yandex_reminders:                 # optional, SPEC FR-14; needs the YandexStation integration
+    - id: alice                     # -> todo.halltasker_alice
+      account: !secret yandex_login # YandexStation entry unique_id; optional when there is one entry
+      device: "Яндекс Станция"      # speaker name or device_id for reminders created from HA; optional
+      push: false
+      interval: 60                  # seconds, >= 30, default 60
   pairs:
     - id: yandex_to_icloud          # required, unique, [a-z0-9_]+
       a: todo.halltasker_moi_dela   # required, entity_id of the todo domain
@@ -451,9 +520,10 @@ halltasker:
         update: true
         complete: true
         delete: true                # true | false | soft
+        delete_past_due: true       # false: tombstone only when the due is already past (FR-6.7)
         filter:
           title_regex: "^(?!#).*"   # valid regex, checked on load
-          require_due: false
+          require_due: false        # true | false | datetime
         transform:
           due: keep                 # keep | date_only | drop
           title_prefix: ""
@@ -468,6 +538,8 @@ Validation rules beyond field types (all checked in `CONFIG_SCHEMA`, error = the
 4. **No cycles:** the undirected graph whose vertices are nodes and whose edges are pairs must be a forest. Check with union-find over the pairs in order: if both nodes of a pair already have the same root, raise `vol.Invalid(f"pairs form a cycle at pair '{id}'")`.
 5. `caldav[].id` values are unique; `caldav[].lists[].id` values are unique across all accounts (they form entity ids); every list has exactly one of `name` / `href`; `interval >= 60`; `url` is a valid URL (`cv.url`).
 6. A pair may reference `todo.halltasker_<list id>`; whether the entity exists is a runtime matter (FR-1.5), not a schema check.
+7. `yandex_reminders[].id` values are unique and distinct from every `caldav[].lists[].id`; `interval >= 30`; `push` is boolean; `account` and `device` are non-empty strings when given.
+8. For every pair whose node is `todo.halltasker_<reminders id>`, the direction rule toward that node has `filter.require_due: datetime`; otherwise `vol.Invalid(f"pair '{id}': the rule toward {node} needs filter.require_due: datetime")`.
 
 The schema is built on `voluptuous`. Facts for HA 2026.9.4 (checked in the installed package): HA already depends on `probatio==0.11.4` and has started migrating to it (`helpers/config_validation.py` imports both), but almost all of HA core still uses `voluptuous`, which is a real package installed through HA's own dependencies (`annotatedyaml`, `hass_nabucasa`). `schema.py` stays on `voluptuous`; re-check this when the pinned HA version is raised. Only `schema.py` changes when we move to `probatio`. `schema.py` exports `CONFIG_SCHEMA` and `def parse_pairs(conf: dict) -> list[SyncPair]`; HA reads `CONFIG_SCHEMA` from the integration module, so `__init__.py` re-exports it (listed in `__all__`).
 
@@ -592,6 +664,9 @@ The core does not import HA: `LinkStore` accepts an object with the methods `asy
 - `tests/plugins/test_ha_todo.py`: the `hass` fixture from `pytest-homeassistant-custom-component`; services of the `todo` domain are registered manually through `hass.services.async_register` with call recording; entity state through `hass.states.async_set("todo.x", "0", {"supported_features": 127})`.
 - `tests/test_init.py`: loading the integration from YAML, creation of the ConfigEntry, appearance of the sensor.
 - `tests/test_caldav_client.py`: pure tests of `to_todo_item` / `apply_todo_item` / `create_kwargs` on `icalendar.Todo` objects built from strings: the Yandex fixtures of RESEARCH §4 (no `DTSTAMP`, `COMPLETED` without `STATUS`), `PERCENT-COMPLETE:100`, `STATUS:NEEDS-ACTION` plus `COMPLETED`, date vs datetime `DUE`, reopen removes `COMPLETED`.
+- `tests/core/test_router.py` (extended): `effective_delete` for a past datetime, a future datetime, a past date, today's date, `None`, and with `delete_past_due: true`; `passes_filter` with `require_due: datetime` for a date, a datetime and `None`. `tests/core/test_engine_plan.py` (extended): a deleted side with a past due and `delete_past_due: false` plans a tombstone only.
+- `tests/test_yandex_reminders.py`: `to_todo_item` on the RESEARCH §4 reminder JSON and on recurring/invalid shapes; `resolve_session` / `resolve_device` against a fake `hass.data["yandex_station"]`; `get_reminders` and the write calls against a fake session object that records `post(url, json, headers)` and returns canned responses, including the `None` endpoint path.
+- `tests/test_reminders_todo.py`: the entity with `yandex_reminders.get_reminders` / `create_reminder` / `update_reminder` / `cancel_reminder` patched in `custom_components.halltasker.reminders_todo`; checks the entity id, features 39, `get_items`, `unavailable` when YandexStation data is missing, complete → cancel + retained `completed` item, retention expiry, reopen error, delete → cancel. No network.
 - `tests/test_todo_caldav.py`: the platform with `connect` / `find_collection` / `fetch_items` patched in `custom_components.halltasker.todo` and a fake calendar object that records `save_todo` / `todo_by_uid` / `delete`; checks the entity id, features 119, `get_items` serialization, `unavailable` after `UpdateFailed`, refresh after a write. No network in tests.
 - `tests/conftest.py`: `pytest_plugins = "pytest_homeassistant_custom_component"`, autouse fixture `auto_enable_custom_integrations`.
 - `tests/todo_platform.py` + `tests/test_e2e.py`: end-to-end tests through the **real** `todo.*` services. `local_todo` cannot be used in tests (it needs the `ical` package, which is not in `requirements_dev.txt`), so the tests register an in-memory `TodoListEntity` platform under a test domain (`MemoryTodoEntity`, built the same way as HA's own `tests/components/todo` helpers). The helpers exist in the installed `pytest_homeassistant_custom_component.common`: `MockModule`, `MockPlatform`, `MockConfigEntry`, `mock_integration(hass, MockModule("test", ...))`, `mock_platform(hass, "test.todo", MockPlatform(async_setup_entry=...))`. The entity implements `todo_items`, `async_create_todo_item`, `async_update_todo_item`, `async_delete_todo_items` over a dict and sets `_attr_supported_features` from a constructor argument, so one test can build a full-featured node and a date-only node. This catches what fake services cannot: `ServiceValidationError` on unsupported fields, the real `get_items` serialization, uid lookup.
@@ -642,3 +717,7 @@ New in v1.1.1 (2026-10-28), from review remarks on IT-21, IT-24, IT-34:
 ## 15. Changes in v1.2 (2026-11-01)
 
 Source: SPEC v1.3 (FR-13), the owner's decision on IT-48. Own CalDAV `todo` platform: §1 (tree), §4a, §7 (`caldav:` section, validation 5–6, platforms `["sensor", "todo"]`), §12 (two test modules), manifest requirements pinned to HA core's `caldav` versions. The core, the `ha_todo` plugin and the engine are unchanged.
+
+## 16. Changes in v1.3 (2026-11-01)
+
+Source: SPEC v1.4 (FR-14, FR-3.1, FR-6.7), plan approved by the owner on 2026-11-01. Own `todo` platform for Alice reminders: §1 (tree), §2 (`Filter.require_due`, `DirectionRule.delete_past_due`), §4b, §6.2 (`effective_delete`, past due), §7 (`yandex_reminders:` section, rule fields, validation 7–8), §12 (three test modules). The engine changes are limited to `_plan_delete` taking the effective delete policy and `passes_filter` knowing `datetime`.

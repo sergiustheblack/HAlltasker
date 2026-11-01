@@ -1,6 +1,6 @@
-# HAlltasker — technical specification (v1.3, 2026-11-01)
+# HAlltasker — technical specification (v1.4, 2026-11-01)
 
-Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9, against v1.1 in §10, against v1.2 in §11.
+Status: approved for development. Changes only by editing this file. Changes against v1.0 are listed in §9, against v1.1 in §10, against v1.2 in §11, against v1.3 in §12.
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/SPEC.md](ru/SPEC.md); if they differ, this file wins.
 
@@ -16,7 +16,7 @@ Two-way synchronization of tasks and reminders between ecosystems (Yandex Alice,
 | Responsibility boundary | The core contains no authorization and no private APIs of external systems. The only data source in the MVP is the HA `todo.*` entities, created by other integrations or by HAlltasker's own CalDAV `todo` platform (FR-13). Beyond the MVP (decision of 2026-10-28, IT-41): if a stock or community HA integration exposes the system and satisfies the scenario, HAlltasker uses it through a plugin and adds no client of its own; only if no such integration exists may a plugin carry its own API client, with credentials in YAML via `!secret` and never in the core |
 | Apple Reminders | Through the stock HA CalDAV integration to iCloud (`caldav.icloud.com`) |
 | Google Tasks | Through the stock HA Google Tasks integration |
-| Yandex | Through HAlltasker's own CalDAV `todo` platform (FR-13) against `caldav.yandex.ru` (Calendar to-do items (дело)); the code is adapted from HA core `caldav`. The stock HA CalDAV integration is not used for Yandex: it does not see completion made in Yandex Calendar (RESEARCH §1, IT-48) and exposes every collection, while Alice adds items only to «Мои дела». Stage 0 (RESEARCH §4): Alice reminders with a time do not reach CalDAV; they stay a separate scenario via YandexStation, not this core |
+| Yandex | Through HAlltasker's own CalDAV `todo` platform (FR-13) against `caldav.yandex.ru` (Calendar to-do items (дело)); the code is adapted from HA core `caldav`. The stock HA CalDAV integration is not used for Yandex: it does not see completion made in Yandex Calendar (RESEARCH §1, IT-48) and exposes every collection, while Alice adds items only to «Мои дела». Alice reminders with a time do not reach CalDAV (stage 0, RESEARCH §4); they are read and written through the private reminders API of the Alice app using the authorized session of the installed YandexStation integration — HAlltasker's own `todo` platform for reminders (FR-14). HAlltasker holds no Yandex credentials |
 | Configuration | **YAML only** (`configuration.yaml`). Config/options flow in the UI is out of the MVP. Technical detail: an import flow creates one ConfigEntry from YAML for reload and diagnostics |
 | Conflicts | Policy per pair: `prefer_a` (default) or `prefer_b`. Fields changed on one side only are merged. True last-write-wins is impossible: HA does not expose task modification times |
 | Routing | Node pairs A↔B; each pair has rules for the A→B and B→A directions. A node may take part in several pairs (FR-12); the pairs must not form a cycle |
@@ -33,6 +33,7 @@ Included:
 - Canonical task: `title`, `description`, `status` (open/done), `due` (none, a date, or a date+time with time zone), `extensions`.
 - One plugin `ha_todo`: any `todo.*` entity as a node. Covers CalDAV (iCloud, Yandex), Google Tasks, Local To-do, Shopping List, and future integrations with no new code.
 - Own `todo` platform for CalDAV (FR-13): selected VTODO collections of a CalDAV account become `todo.*` entities with RFC 5545 completion semantics. Required for Yandex; usable with any CalDAV server.
+- Own `todo` platform for Alice reminders (FR-14): the account's timed reminders become one `todo.*` entity (title + due datetime), with the YandexStation integration as the session provider.
 - Node pairs with per-direction rules: allowed operations, filters, transforms.
 - Internal storage of links and tombstones in `.storage/halltasker`.
 - Initial sync in the modes `merge` (default) and `dry_run`.
@@ -80,7 +81,7 @@ Not included:
 
 ### FR-3 Router
 
-1. For each pair and each direction the following are set: `create`, `update`, `complete` (true/false), `delete` (true/false/soft), `filter` (`title_regex`, `require_due`), `transform` (`due: keep | date_only | drop`, `title_prefix`).
+1. For each pair and each direction the following are set: `create`, `update`, `complete` (true/false), `delete` (true/false/soft) with the modifier `delete_past_due` (true/false, FR-6.7), `filter` (`title_regex`, `require_due`: false | true | `datetime`, where `datetime` passes only tasks whose `due` has a time), `transform` (`due: keep | date_only | drop`, `title_prefix`).
 2. Default: all operations are allowed, `delete: true`, no filter, no transforms.
 3. The filter is applied to the source's canonical task before writing. A task that does not pass the filter at creation is not created on the other side and is not linked to it.
 4. The transform is applied after the filter and before the downgrade.
@@ -108,6 +109,7 @@ Not included:
 4. With `delete: true`, the item is deleted on the other side, and both links get a tombstone.
 5. A tombstone is kept for at least 30 days. After that it is removed at the end of a sync cycle, but only if the item it points to is absent from the node. A tombstone whose item still exists in the node (the `delete: false` case) is never removed, so the item does not reappear as a new one.
 6. A tombstone belongs to one pair. Other pairs that contain the same node see the deletion or the "done" write as an ordinary change and apply their own rules (FR-12).
+7. `delete_past_due: false` in the direction X→Y: when the item on X is gone and its last synced `due` is already in the past (a datetime not later than now, or a date before today in the HA time zone), the deletion is handled as `delete: false` — tombstone only, Y stays untouched. A deletion before the due time follows `delete` as usual. Default `true` (the previous behavior). Purpose: a reminder that has fired and vanished must not remove its duplicate elsewhere, while a reminder cancelled ahead of time must.
 
 ### FR-7 Idempotency and storage
 
@@ -160,6 +162,15 @@ The full schema is in `docs/ARCHITECTURE.md` §7. On a schema error the integrat
 6. The list is refreshed every `interval` seconds (default 300, minimum 60) and immediately after every write made through the entity. A failed refresh makes the entity `unavailable` until the next successful one; a pair then sees `NodeUnavailable` (FR-1.5).
 7. The platform is a thin adaptation of HA core `caldav` (`todo.py`, `api.py`), kept in this repository without the calendar platform and without the config flow. It uses the `caldav` library pinned to the version of the pinned HA core.
 
+### FR-14 Alice reminders `todo` platform
+
+1. The `halltasker:` section may hold `yandex_reminders:` — a list of reminder nodes: `id`; optional `account` = the unique id (login) of the YandexStation config entry; optional `device` = speaker name or quasar device id used for reminders created from HA (default: the first speaker); `push` (default false); `interval` in seconds (default 60, minimum 30). Without `account` the only YandexStation entry is used; several entries without `account` make the node `unavailable` with an error in the log.
+2. Each node becomes one entity `todo.halltasker_<id>` with `supported_features` = create, update, delete, due datetime (no due date, no description; value 39). The direction rule toward such a node must set `filter.require_due: datetime` (checked on load).
+3. Authentication belongs to the YandexStation integration: HAlltasker takes the live authorized session of its loaded config entry and sends requests to the private reminders API of the Alice app with the same headers YandexStation uses for alarms. HAlltasker stores no tokens or cookies. If YandexStation is not loaded or the entry is missing, the entity is `unavailable` and the lookup is retried on every interval.
+4. Mapping: reminder `id` → `uid`, `text` → `summary`, the single-trigger datetime → `due` (interpreted in the HA time zone unless stage 1 shows otherwise), `status = needs_action`. Reminders with any other trigger policy (recurring) are ignored.
+5. Writes: creating an item creates a reminder on the configured device with the item's text and time; renaming or moving the time updates the reminder when the API offers it (stage 1), otherwise the write fails with a logged error and the pair must set `update: false` toward the node; `status: completed` cancels the reminder and keeps the item in the entity as `completed` in local storage until one day after its due time, so that the engine sees a confirmed completion rather than a deletion; deleting the item cancels the reminder. Reopening a cancelled reminder is not supported.
+6. Stage 1 (RESEARCH §2b) fixes the write endpoints, the behavior of fired reminders and the time zone before the write path is implemented; the read path (reminders → other systems) does not depend on it.
+
 ## 6. Non-functional requirements
 
 1. Code follows HA core standards: asyncio, type annotations, `ruff` with no findings, configuration in `pyproject.toml`.
@@ -199,12 +210,13 @@ Environment: two `local_todo` entities in a test HA.
 1. Pair `todo.halltasker_moi_dela` (FR-13, Yandex list «Мои дела») ↔ `local_todo`: «Алиса, добавь в список дел на сегодня помыть полы» (Alice, add "wash the floors" to today's to-do list) → a task with `due` set to today appears in `local_todo` no later than two list intervals (FR-13.6).
 2. Voice reminder with a time: «Алиса, напомни сегодня в 19:00 помыть полы» (Alice, remind me today at 19:00 to wash the floors) → check whether it reaches CalDAV with the time. The result is recorded in `docs/RESEARCH.md`. Failing this scenario does not block the MVP release.
 3. Completion both ways through FR-13: close an item in Yandex Calendar → `done` in `local_todo` within one list interval; close in `local_todo` → the item is shown as done in Yandex Calendar and Alice no longer reads it out. Reopen on either side → `open` on the other.
+4. Reminder → iCloud (FR-14; pair `todo.halltasker_alice` ↔ an iCloud list, `a_to_b: {delete: true, delete_past_due: false}`, `b_to_a: {create: false, update: false, filter: {require_due: datetime}}`): «Алиса, напомни завтра в 10:00 проверить почту» → an item with `due` tomorrow 10:00 appears in iCloud within one node interval plus one pair interval; cancelling the reminder by voice before 10:00 removes the iCloud item; after the reminder fires, the iCloud item stays; completing the iCloud item cancels the reminder and the HA item becomes `done`.
 
 ## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Alice reminders do not reach CalDAV | Scenario C is marked experimental; the source is added by an external PR to YandexStation |
+| Alice reminders do not reach CalDAV | FR-14 reads and writes them through the private API of the Alice app with the YandexStation session; the API is unofficial and may change, so the node is isolated in one platform module and the rest of the integration does not depend on it |
 | Yandex marks completion with `COMPLETED` only; stock HA CalDAV reads `STATUS` only and refreshes every ~15 min | Own CalDAV `todo` platform (FR-13) with RFC 5545 completion rules and its own interval |
 | iCloud CalDAV does not see "upgraded" lists | Environment requirement in the README |
 | Google Tasks loses the time of day | `date_only` downgrade, not a conflict |
@@ -241,3 +253,12 @@ Source: stage 0 results (IT-42, RESEARCH §4) and the owner's decision on IT-48 
 - §3, FR-13: the platform, list selection, RFC 5545 completion semantics, own refresh interval.
 - §6.5: the CalDAV libraries are the only allowed manifest requirements, pinned to HA core's versions.
 - §7 C1, C3 and §8: scenarios and risks updated for FR-13.
+
+## 12. Changes in v1.4 (2026-11-01)
+
+Source: the owner's decision to make Alice reminders a sync node now, on the v1 model (plan approved 2026-11-01); stage 0 step 5 and IT-52 (RESEARCH §4).
+
+- §2 Yandex, §3: own `todo` platform for Alice reminders through the YandexStation session; no Yandex credentials in HAlltasker.
+- FR-3.1: `require_due: datetime`; `delete_past_due` modifier. FR-6.7: a deletion after the due time is a tombstone only when `delete_past_due: false`.
+- FR-14: the platform, mapping, write semantics (complete = cancel + local retention), stage 1 gate for the write path.
+- §7 C4, §8: scenario and risk for reminders.
