@@ -2,7 +2,7 @@
 
 > Language: English only (agent-facing, binding). A Russian reading copy is in [docs/ru/ARCHITECTURE.md](ru/ARCHITECTURE.md); if they differ, this file wins.
 
-This document describes **how** `docs/SPEC.md` is implemented. The signatures and data structures here are binding: tasks in `docs/TASKS.md` refer to them by name. Changes against v1.0 are listed in §14, against v1.1.1 in §15, against v1.2 in §16.
+This document describes **how** `docs/SPEC.md` is implemented. The signatures and data structures here are binding: Yandex Tracker issues refer to them by name. Changes against v1.0 are listed in §14, against v1.1.1 in §15, against v1.2 in §16.
 
 ## 1. Overview
 

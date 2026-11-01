@@ -10,13 +10,13 @@ Authoritative documents, in priority order:
 
 - `docs/SPEC.md` — requirements. Do not change without the owner's decision.
 - `docs/ARCHITECTURE.md` — module layout, data model, engine algorithm, HA API facts, YAML schema. Signatures there are binding.
-- `docs/TASKS.md` — ordered atomic tasks T-01…T-31 for implementation agents. Mark done with `✅`. Newer tasks live only in Yandex Tracker (`docs/TRACKER.md`): `role:*` tags route work to the executor, architect, or reviewer; `agent:<name>` and `review:<name>` record participation for statistics.
+- Yandex Tracker — the only source of tasks. Read `docs/TRACKER.md` and only the matching `TRACKER.developer.md`, `TRACKER.architect.md`, or `TRACKER.reviewer.md`; `role:*` routes work, while `agent:<name>` and `review:<name>` record participation.
 - `docs/RESEARCH.md` — external constraints with sources, and the stage 0 protocol for Yandex CalDAV.
 - `AGENTS.md` — working rules for weak self-hosted coding agents. Keep tasks and instructions compatible with those rules: one task per commit, listed files only, no new dependencies.
 
 ## Documentation language policy
 
-- **Agent-facing docs are English only:** `AGENTS.md`, `CLAUDE.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md`, `docs/RESEARCH.md`, plus all code, comments, tests and commit messages.
+- **Agent-facing docs are English only:** `AGENTS.md`, `CLAUDE.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/TRACKER*.md`, `docs/QUESTIONS.md`, `docs/RESEARCH.md`, plus all code, comments, tests and commit messages.
 - **Human-facing docs are bilingual, Russian is primary:** `README.md` (Russian) + `README.en.md`; Russian reading copies of the spec, architecture and research live in `docs/ru/`. The English file in `docs/` is binding; `docs/ru/` copies are for the owner.
 - When you change `docs/SPEC.md`, `docs/ARCHITECTURE.md` or `docs/RESEARCH.md`, update the matching `docs/ru/` copy in the same change (translate the changed sections; do not leave them out of sync).
 - Reply to the owner in Russian, terse. Implementation agents never write Russian (see `AGENTS.md`).
