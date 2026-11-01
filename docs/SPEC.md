@@ -45,6 +45,7 @@ Not included:
 - RRULE, subtasks, attachments, tags, priorities, geo-reminders, item ordering.
 - Notes, calendar events, task trackers, shopping list. The architecture leaves room for them as future plugins (`docs/ARCHITECTURE.md` §13). Calendar events are a low-priority idea only (decision of 2026-10-28).
 - Configuration UI, suppression of duplicate notifications, own clients for external APIs.
+- v2 (connections, direct plugins, field mapping, configuration panel) is specified in [docs/v2/SPEC.md](v2/SPEC.md); this file stays binding for v1 issues until the v2 implementation starts.
 
 ## 4. Terms
 

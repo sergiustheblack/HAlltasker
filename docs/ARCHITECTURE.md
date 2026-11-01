@@ -688,6 +688,7 @@ Commands: see `CLAUDE.md`.
 - Other resource kinds (calendar events, shopping items with quantities, tracker issues) do **not** fit: `FIELDS`, `Capabilities`, `diff`, `conflict`, `downgrade` and `matching` are written for the four task fields, and `extensions` are dropped by the downgrade and ignored by the diff. Supporting them is an architecture v2 (resource kind + field profile + per-field capabilities, same engine); the decision record is Tracker issue IT-41. Not started until the task MVP is verified in a real HA. Owner's decisions of 2026-10-28: calendar events are a low-priority idea; a plugin may carry its own API client only when no stock or community HA integration covers the system (SPEC §2, v1.2).
 - Groups of N nodes: in v1.1 a node may already be shared by several pairs (a forest of pairs). A true N-node group with one canonical task across all nodes would need a new namespace kind and a generalized decision table; not planned.
 - UI: config/options flow on top of the same `parse_pairs`; YAML stays the source of truth until a separate decision.
+- Architecture v2 (field schema, direct plugins, connections, panel) is in [docs/v2/ARCHITECTURE.md](v2/ARCHITECTURE.md); this file stays binding for v1 issues until the v2 implementation starts.
 
 ## 14. Changes in v1.1 (2026-10-26)
 
