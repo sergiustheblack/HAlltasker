@@ -2,13 +2,13 @@
 
 Read `docs/TRACKER.md` first. Role: `role:architect`.
 
-Create open implementation issues under milestone `IT-9`, with native Project `4` and `role:developer`:
+Create open implementation issues with mandatory native Project `4` and `role:developer`:
 
 ```bash
-yt create --queue IT --project 4 --parent IT-9 --tags role:developer --summary "<summary>" --description "<specification>"
+yt create --queue IT --project 4 --tags role:developer --summary "<summary>" --description "<specification>"
 ```
 
-The description must contain **Read**, **Files**, and **Done when**; add `Code review: required` when review is mandatory. Do not require the legacy `halltasker` tag. Link dependencies explicitly.
+When working within a milestone, attach every new issue to it with `--parent <MILESTONE>`. You may create new milestones at your discretion or at the owner's request. The description must contain **Read**, **Files**, and **Done when**; add `Code review: required` when review is mandatory. Do not require the legacy `halltasker` tag. Link dependencies explicitly.
 
 The current specification must always be complete. Initially it is the description. Whenever requirements or decisions change it, publish a full replacement, not a delta:
 
