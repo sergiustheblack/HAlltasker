@@ -1,6 +1,6 @@
 # Yandex Tracker core
 
-Tracker is the only source of tasks. Queue: `IT`; milestone: `IT-9`; native Project: **HAlltasker**, numeric Project ID `4` (the API exposes no separate `shortId`). Commit as `IT-<N>: <issue summary>` on your own branch.
+Tracker is the only source of tasks. Queue: `IT`; native Project: **HAlltasker**, numeric Project ID `4` (the API exposes no separate `shortId`). Project `4` is mandatory for every new issue. An agent creating issues while working within a milestone must attach them to that milestone. Architects may create milestones at their discretion or at the owner's request. Commit as `IT-<N>: <issue summary>` on your own branch.
 
 Use the `yandex-tracker` skill and its `yt` wrapper. Read this file and only your role file:
 
