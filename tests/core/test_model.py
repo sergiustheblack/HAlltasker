@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pytest
 
 from custom_components.halltasker.core.model import (
+    TASK_SCHEMA,
+    CanonicalItem,
     CanonicalTask,
+    Capabilities,
+    Connection,
+    Container,
     DirectionRule,
+    FieldMap,
+    FieldSpec,
+    ItemSchema,
     Link,
+    Node,
+    NodeListing,
+    Pair,
     Snapshot,
     SyncPair,
+    ValueMap,
     due_from_str,
     due_to_str,
+    normalize_value,
 )
 
 TZ = dt.timezone(dt.timedelta(hours=3))
@@ -118,3 +132,99 @@ def test_sync_pair_defaults_allow_everything() -> None:
     assert pair.conflict == "prefer_a"
     assert pair.initial_sync == "merge"
     assert pair.enabled is True
+
+
+def test_v2_configuration_models_round_trip_as_json_safe_data() -> None:
+    value_map = ValueMap(read={"active": "open"}, write={"open": "active"})
+    mapping = FieldMap("status", "state", "state", value_map_a=value_map)
+    connection = Connection("connection", "Account", "plugin", {"region": "eu"})
+    node = Node("node", "Tasks", "connection", Container("list", "Tasks", path="/tasks"))
+    pair = Pair("pair", "Sync", "node", "other", (mapping,))
+    restored = Pair.from_dict(json.loads(json.dumps(pair.to_dict())))
+    assert (
+        Connection.from_dict(connection.to_dict()) == connection
+        and Node.from_dict(node.to_dict()) == node
+        and restored == pair
+    )
+
+
+def test_field_spec_rejects_bounds_for_non_integer_fields() -> None:
+    with pytest.raises(ValueError, match="int fields"):
+        FieldSpec("title", "str", minimum=1)
+
+
+def test_field_spec_rejects_reversed_integer_bounds() -> None:
+    with pytest.raises(ValueError, match="minimum"):
+        FieldSpec("priority", "int", minimum=3, maximum=2)
+
+
+def test_normalize_value_enforces_integer_bounds() -> None:
+    spec = FieldSpec("priority", "int", minimum=1, maximum=3, required_create=True)
+    with pytest.raises(ValueError, match="below minimum"):
+        normalize_value(spec, 0)
+
+
+def test_canonical_item_serializes_all_schema_fields_and_normalizes_lists() -> None:
+    schema = ItemSchema(
+        "task",
+        (FieldSpec("title", "str"), FieldSpec("tags", "str_list")),
+    )
+    item = CanonicalItem("task", {"title": "x", "tags": ["b", "a", "b"]})
+    restored = CanonicalItem.from_dict(item.to_dict(schema), schema)
+    assert restored.fields == {"title": "x", "tags": ("a", "b")}
+
+
+def test_snapshot_normalizes_set_like_values_before_hashing() -> None:
+    schema = ItemSchema(
+        "task",
+        (FieldSpec("title", "str"), FieldSpec("tags", "str_list")),
+    )
+    left = CanonicalItem("task", {"title": "x", "tags": ["b", "a", "b"]})
+    right = CanonicalItem("task", {"title": "x", "tags": ("a", "b")})
+    assert Snapshot.of(left, schema).hash == Snapshot.of(right, schema).hash
+
+
+def test_datetime_field_rejects_a_naive_datetime() -> None:
+    item = CanonicalItem("task", {"when": dt.datetime(2026, 10, 5, 12, 0)})
+    schema = ItemSchema("task", (FieldSpec("when", "datetime"),))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        item.to_dict(schema)
+
+
+def test_mapping_backed_models_copy_and_freeze_input_data() -> None:
+    settings = {"region": "eu"}
+    connection = Connection("connection", "Account", "plugin", settings)
+    settings["region"] = "us"
+    assert connection.settings == {"region": "eu"}
+
+
+def test_node_listing_copies_items_and_keeps_filtered_ids() -> None:
+    items = {"one": CanonicalTask("x").to_item()}
+    listing = NodeListing(items, frozenset({"ignored"}))
+    items.clear()
+    assert set(listing.items) == {"one"} and listing.filtered_ids == {"ignored"}
+
+
+def test_capabilities_keep_read_and_write_shapes_separate() -> None:
+    capabilities = Capabilities(
+        create=True,
+        update=True,
+        delete=False,
+        fields={"due": "partial"},
+        read_fields={"due": "full", "title": "full"},
+    )
+    assert capabilities.fields == {"due": "partial"} and capabilities.read_fields == {
+        "due": "full",
+        "title": "full",
+    }
+
+
+def test_str_list_preserves_none_as_distinct_from_an_empty_collection() -> None:
+    spec = FieldSpec("tags", "str_list")
+    assert normalize_value(spec, None) is None and normalize_value(spec, []) == ()
+
+
+def test_task_facade_converts_through_the_task_schema() -> None:
+    task = CanonicalTask("x", description="note", due=dt.date(2026, 10, 5))
+    item = task.to_item()
+    assert CanonicalTask.from_item(item) == task and item.to_dict(TASK_SCHEMA)["kind"] == "task"
