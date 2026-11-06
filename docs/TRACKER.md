@@ -17,6 +17,7 @@ Every active issue has exactly one `role:*` tag. It determines who acts next; `a
 Routing states are `open` + developer/reviewer or `needInfo` + architect. Claimed work is `inProgress` with the same role. Finish your own claimed issue before taking another; never claim another agent's `inProgress` issue.
 
 ```bash
+alias yt='~/.agents/skills/yandex-tracker/yt'
 yt next --role <developer|architect|reviewer> --queue IT
 yt claim <KEY> --agent <name>
 ```
