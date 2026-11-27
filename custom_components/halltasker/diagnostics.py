@@ -39,7 +39,7 @@ async def async_get_config_entry_diagnostics(
     if coordinator is None or store is None:
         return {
             "pairs": [],
-            "store": async_redact_data({"schema": 2, "pairs": {}}, REDACTED_KEYS),
+            "store": async_redact_data({"schema": 3, "pairs": {}}, REDACTED_KEYS),
             "results": {},
         }
     return {

@@ -46,7 +46,7 @@ async def test_diagnostics_returns_pairs_store_and_results(hass) -> None:
     assert set(data) == {"pairs", "store", "results"}
     assert data["pairs"][0]["id"] == "p1"
     assert data["pairs"][0]["a_to_b"]["create"] is True
-    assert data["store"]["schema"] == 2
+    assert data["store"]["schema"] == 3
     assert data["store"]["pairs"]["p1"]["initialized"] is True
     assert data["results"]["p1"]["ok"] is True
     assert data["results"]["p1"]["links"] == 2
@@ -61,4 +61,4 @@ async def test_diagnostics_without_loaded_coordinator_is_empty(hass) -> None:
     entry = MockConfigEntry(domain=DOMAIN)
     entry.add_to_hass(hass)
     data = await async_get_config_entry_diagnostics(hass, entry)
-    assert data == {"pairs": [], "store": {"schema": 2, "pairs": {}}, "results": {}}
+    assert data == {"pairs": [], "store": {"schema": 3, "pairs": {}}, "results": {}}

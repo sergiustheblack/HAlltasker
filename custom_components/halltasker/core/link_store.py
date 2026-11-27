@@ -1,18 +1,20 @@
-"""Persistent link index: one namespace per pair on top of a storage object."""
+"""Persistent link index: one contract-checked namespace per pair on top of a storage object."""
 
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 import datetime as dt
 import logging
-from typing import Any, Protocol
+from types import MappingProxyType
+from typing import Any, Protocol, cast
 import uuid
 
-from .model import Link, SyncPair
+from .model import Link, Pair, SyncPair
 
 _LOGGER = logging.getLogger(__package__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StorageLike(Protocol):
@@ -23,6 +25,21 @@ class StorageLike(Protocol):
     async def async_save(self, data: dict[str, Any]) -> None: ...
 
 
+@dataclass(frozen=True)
+class PairContract:
+    """The snapshot-compatibility contract a namespace was created under."""
+
+    binding: str
+    slots: Mapping[str, str]  # synchronized slot -> semantic fingerprint
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "slots", MappingProxyType(dict(self.slots)))
+
+
+class LinkCompatibilityError(Exception):
+    """The stored namespace contradicts the incoming pair contract."""
+
+
 class PairLinks:
     """One pair's namespace: links and canonical ids invisible to other pairs."""
 
@@ -31,10 +48,14 @@ class PairLinks:
         pair_id: str,
         nodes: tuple[str, str],
         store: LinkStore,
+        contract: PairContract | None = None,
+        kind: str = "task",
         initialized: bool = False,
     ) -> None:
         self.pair_id = pair_id
         self.nodes = nodes
+        self.kind = kind
+        self.contract: PairContract | None = contract
         self._store = store
         self._initialized = initialized
         self._by_canonical: dict[str, dict[str, Link]] = {}
@@ -103,6 +124,22 @@ class PairLinks:
         if pair_id != self.pair_id:
             raise ValueError(f"namespace of pair {self.pair_id!r} got a call for pair {pair_id!r}")
 
+    def _accepts(self, contract: PairContract) -> bool:
+        # Fail closed: a namespace without a stored contract cannot prove compatibility.
+        if self.contract is None:
+            return False
+        if self.contract.binding != contract.binding:
+            return False
+        return all(
+            contract.slots.get(slot) == fingerprint
+            for slot, fingerprint in self.contract.slots.items()
+        )
+
+    def _merge_contract(self, contract: PairContract) -> None:
+        # Additive contracts extend the metadata and persist with the next save.
+        if self.contract != contract:
+            self.contract = contract
+
     def _remove(self, canonical_id: str, node: str, link: Link) -> None:
         self._by_external.pop((node, link.external_id), None)
         node_links = self._by_canonical.get(canonical_id)
@@ -131,10 +168,21 @@ class LinkStore:
             _LOGGER.warning("halltasker: link storage format is outdated and was discarded")
             return
         for pair_id, payload in data.get("pairs", {}).items():
+            binding = payload.get("binding")
+            contract = (
+                None
+                if binding is None
+                else PairContract(
+                    binding=cast(str, binding),
+                    slots=cast(Mapping[str, str], payload.get("slots", {})),
+                )
+            )
             namespace = PairLinks(
                 pair_id,
-                tuple(payload["nodes"]),
+                cast(tuple[str, str], tuple(payload["nodes"])),
                 self,
+                contract=contract,
+                kind=cast(str, payload.get("kind", "task")),
                 initialized=bool(payload.get("initialized")),
             )
             for link_data in payload.get("links", []):
@@ -150,6 +198,9 @@ class LinkStore:
             "pairs": {
                 pair_id: {
                     "nodes": list(namespace.nodes),
+                    "kind": namespace.kind,
+                    "binding": namespace.contract.binding if namespace.contract else None,
+                    "slots": dict(namespace.contract.slots) if namespace.contract else {},
                     "initialized": namespace._initialized,
                     "links": [link.to_dict() for link in namespace._links()],
                 }
@@ -157,21 +208,49 @@ class LinkStore:
             },
         }
 
-    def for_pair(self, pair: SyncPair) -> PairLinks:
-        """Return the namespace of the pair, resetting it if its nodes changed."""
+    def incompatible_pairs(self, contracts: Mapping[str, PairContract]) -> frozenset[str]:
+        """Return pair ids whose stored namespaces fail the incoming contracts."""
+        return frozenset(
+            pair_id
+            for pair_id, contract in contracts.items()
+            if (namespace := self._pairs.get(pair_id)) is not None
+            and not namespace._accepts(contract)
+        )
+
+    def for_pair(self, pair: Pair | SyncPair, contract: PairContract | None = None) -> PairLinks:
+        """Return the namespace of the pair uuid; contract=None keeps the v1.3 facade."""
         existing = self._pairs.get(pair.id)
-        if existing is not None:
-            if set(existing.nodes) == {pair.a, pair.b}:
-                return existing
-            _LOGGER.warning(
-                "halltasker: pair %s now connects %s and %s; its links were reset",
-                pair.id,
-                pair.a,
-                pair.b,
+        if existing is None:
+            namespace = PairLinks(pair.id, (pair.a, pair.b), self, contract=contract)
+            self._pairs[pair.id] = namespace
+            return namespace
+        if contract is None:
+            return self._facade_for_pair(pair, existing)
+        if not existing._accepts(contract):
+            raise LinkCompatibilityError(
+                f"pair {pair.id}: stored links do not match the incoming contract; "
+                "an explicit confirmed reset is required"
             )
+        existing._merge_contract(contract)
+        return existing
+
+    def _facade_for_pair(self, pair: Pair | SyncPair, existing: PairLinks) -> PairLinks:
+        # v1.3 §9 behavior until the v2 configuration migration ports every caller.
+        if set(existing.nodes) == {pair.a, pair.b}:
+            return existing
+        _LOGGER.warning(
+            "halltasker: pair %s now connects %s and %s; its links were reset",
+            pair.id,
+            pair.a,
+            pair.b,
+        )
         namespace = PairLinks(pair.id, (pair.a, pair.b), self)
         self._pairs[pair.id] = namespace
         return namespace
+
+    def reset(self, pair_id: str) -> None:
+        """Drop the namespace after an explicit confirmed reset request."""
+        self._pairs.pop(pair_id, None)
 
     def pair_ids(self) -> list[str]:
         return sorted(self._pairs)
