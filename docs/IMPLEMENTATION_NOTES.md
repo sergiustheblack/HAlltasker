@@ -62,7 +62,7 @@ observations worth review. Link verification lives in `docs/LINK_CHECK.md`.
 
 ## Open items
 
-- Q-1 (docs/QUESTIONS.md): probatio shipped in HA 2026.9, not 2026.11 as SPEC/ARCHITECTURE say;
+- Probatio shipped in HA 2026.9, not 2026.11 as SPEC/ARCHITECTURE say;
   voluptuous API still works via the compat alias, so `schema.py` is unaffected.
 - docs/LINK_CHECK.md: 3 outdated links, 1 half-supported claim, access notes — owner to decide
   on edits (RESEARCH/SPEC/ARCHITECTURE are frozen for agents).

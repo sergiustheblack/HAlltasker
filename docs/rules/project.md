@@ -14,9 +14,10 @@ Design: `docs/ARCHITECTURE.md`. Yandex Tracker is the only source of tasks.
   The core is pure.
 - Do not invent Home Assistant methods and services. Everything you need is
   listed in `docs/ARCHITECTURE.md` §4, §7, §8, §9. If something is missing,
-  record a question in `docs/QUESTIONS.md`.
+  route a question to the architect as described in `docs/rules/workflow.md`.
 - Do not change `docs/SPEC.md` and `docs/ARCHITECTURE.md`. If you find a
-  contradiction, record a question in `docs/QUESTIONS.md`.
+  contradiction, route a question to the architect as described in
+  `docs/rules/workflow.md`.
 - Do not do several tasks in one commit. Do not start the next task until the
   current one passes the checks.
 - Do not write service markers, prefixes, or hidden fields into the user's
@@ -24,18 +25,6 @@ Design: `docs/ARCHITECTURE.md`. Yandex Tracker is the only source of tasks.
 - Do not touch `.idea/`.
 - Do not create or edit files under `docs/ru/`. They are human reading copies
   maintained by the owner.
-
-## Question format in docs/QUESTIONS.md
-
-```
-## Q-<number> (T-<task>) — open
-Context: what you were doing.
-Problem: what is unclear or contradictory.
-Options: 1) … 2) …
-```
-
-After recording the question, stop work on the task. The answer will appear in
-the same file marked `— closed`.
 
 ## Checking the Home Assistant API
 

@@ -3,7 +3,7 @@
 Scope: every external link cited in `docs/RESEARCH.md`, `docs/SPEC.md` and `docs/ARCHITECTURE.md`.
 Method: each URL was fetched and compared against the claim our docs make; GitHub repos/issues
 were checked for current state (open/closed, archived, last activity). Related contradiction in
-our own docs is recorded as Q-1 in `docs/QUESTIONS.md`.
+our own docs is documented below.
 
 Verdicts: **OK** (claim holds), **OUTDATED** (page no longer supports the claim as written),
 **BROKEN**, **IRRELEVANT**.
@@ -78,7 +78,7 @@ Extra checks:
 - **Probatio already shipped in HA 2026.9** — see [contributors blog, 2026-09-30](https://contributors.home-assistant.io/blog/2026/09/30/probatio-validation-engine).
   Our docs (SPEC §8, ARCHITECTURE §7, RESEARCH §1) say this happens in 2026.11, which is wrong.
   `homeassistant==2026.9.4` requires `probatio==0.11.4` and aliases `voluptuous` to it, so the
-  planned voluptuous-based `schema.py` keeps working. Recorded as **Q-1** in `docs/QUESTIONS.md`.
+  planned voluptuous-based `schema.py` keeps working.
 
 ## 5. Summary for the architect
 

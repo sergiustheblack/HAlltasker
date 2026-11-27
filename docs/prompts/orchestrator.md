@@ -43,8 +43,8 @@ For each stage, in this order: `fetch`, `plan`, `code`, `tests`, `verify`,
 
 - A subagent needs a file outside the task's whitelist: stop and report to
   the owner. Do not improvise around it.
-- The spec is contradictory or an API is missing: record a question per
-  `docs/rules/project.md`, then stop.
+- The spec is contradictory or an API is missing: route a question per
+  `docs/rules/workflow.md`, then stop.
 - Never commit before verify is green and review is APPROVED.
 - One actor never both writes the code and alone declares it reviewed.
 - You catch yourself about to read, run, or explore something no stage file

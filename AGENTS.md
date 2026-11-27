@@ -10,15 +10,15 @@ index: the full rule lives behind each link. Hard limits in one line each:
 3. Touch only the files listed in your task's current specification. Need
    another file — stop and route a question, never improvise.
 4. Never change `docs/SPEC.md`, `docs/ARCHITECTURE.md`, or anything under
-   `docs/ru/`. Contradictions and missing APIs go to `docs/QUESTIONS.md`.
+   `docs/ru/`. Route contradictions and missing APIs to the architect in
+   Yandex Tracker.
 5. One task, one commit `IT-<N>: <issue summary>`; all checks green first.
 6. Subagents are orchestrated only via the contract in
    `docs/prompts/orchestrator.md`.
 
 Full rules:
 
-- Project overview, forbidden actions, releases, question format:
-  `docs/rules/project.md`
+- Project overview, forbidden actions, releases: `docs/rules/project.md`
 - Task workflow, tracker CLI, commits: `docs/rules/workflow.md`
 - Code style: `docs/rules/style.md`
 - Tests and running checks: `docs/rules/testing.md`

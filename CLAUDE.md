@@ -16,7 +16,7 @@ Authoritative documents, in priority order:
 
 ## Documentation language policy
 
-- **Agent-facing docs are English only:** `AGENTS.md`, `CLAUDE.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/TRACKER*.md`, `docs/QUESTIONS.md`, `docs/RESEARCH.md`, plus all code, comments, tests and commit messages.
+- **Agent-facing docs are English only:** `AGENTS.md`, `CLAUDE.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/TRACKER*.md`, `docs/RESEARCH.md`, plus all code, comments, tests and commit messages.
 - **Human-facing docs are bilingual, Russian is primary:** `README.md` (Russian) + `README.en.md`; Russian reading copies of the spec, architecture and research live in `docs/ru/`. The English file in `docs/` is binding; `docs/ru/` copies are for the owner.
 - When you change `docs/SPEC.md`, `docs/ARCHITECTURE.md` or `docs/RESEARCH.md`, update the matching `docs/ru/` copy in the same change (translate the changed sections; do not leave them out of sync).
 - Reply to the owner in Russian, terse. Implementation agents never write Russian (see `AGENTS.md`).
